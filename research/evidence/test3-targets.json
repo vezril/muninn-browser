@@ -1,0 +1,44 @@
+[ {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@1e112499da812a1dde62101ed601dcb93024aaff/inspector.html?ws=localhost:9222/devtools/page/856CAAF6B92FE7FDED7DD03B20DA8A91",
+   "faviconUrl": "https://account.proton.me/assets/favicon.ico",
+   "id": "856CAAF6B92FE7FDED7DD03B20DA8A91",
+   "title": "Proton Account: Sign-in",
+   "type": "page",
+   "url": "https://account.proton.me/login",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/856CAAF6B92FE7FDED7DD03B20DA8A91"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@1e112499da812a1dde62101ed601dcb93024aaff/inspector.html?ws=localhost:9222/devtools/page/CA38612783B35D77B03F2CDFA722D53C",
+   "faviconUrl": "https://account.proton.me/assets/favicon.ico",
+   "id": "CA38612783B35D77B03F2CDFA722D53C",
+   "parentId": "856CAAF6B92FE7FDED7DD03B20DA8A91",
+   "title": "chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/dropdown.html#iframe=f2bfefc7",
+   "type": "iframe",
+   "url": "chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/dropdown.html#iframe=f2bfefc7",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/CA38612783B35D77B03F2CDFA722D53C"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@1e112499da812a1dde62101ed601dcb93024aaff/worker_app.html?ws=localhost:9222/devtools/page/F3CD36F1F64DAB458639AEAC7074418E",
+   "id": "F3CD36F1F64DAB458639AEAC7074418E",
+   "title": "Service Worker chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/background.js",
+   "type": "service_worker",
+   "url": "chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/background.js",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/F3CD36F1F64DAB458639AEAC7074418E"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@1e112499da812a1dde62101ed601dcb93024aaff/inspector.html?ws=localhost:9222/devtools/page/49CD211F06A3DEFA1BCA741D0B40E74B",
+   "id": "49CD211F06A3DEFA1BCA741D0B40E74B",
+   "title": "",
+   "type": "worker",
+   "url": "",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/49CD211F06A3DEFA1BCA741D0B40E74B"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@1e112499da812a1dde62101ed601dcb93024aaff/inspector.html?ws=localhost:9222/devtools/page/5CCFFE4C3B3058A9BC7A043F8906B1AE",
+   "id": "5CCFFE4C3B3058A9BC7A043F8906B1AE",
+   "title": "",
+   "type": "worker",
+   "url": "",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/5CCFFE4C3B3058A9BC7A043F8906B1AE"
+} ]

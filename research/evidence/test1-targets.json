@@ -1,0 +1,53 @@
+[ {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@5ed83977fcfa0f34249cafc7d96cab43b045927f/inspector.html?ws=localhost:9222/devtools/page/54B6D80391099FC4A8EA9246B3B58E8E",
+   "faviconUrl": "https://account.proton.me/assets/favicon.ico",
+   "id": "54B6D80391099FC4A8EA9246B3B58E8E",
+   "title": "Thank you for installing Proton Pass",
+   "type": "page",
+   "url": "https://account.proton.me/pass/extension-onboarding?loginParams=app%3Dproton-pass-extension%26state%3DREDACTED-FOR-PUBLICATION%26independent%3D0%26prompt%3Dlogin%26promptBypass%3Dsso%26promptType%3Doffline%26pt%3Doffline%26t%3D3&signupParams=app%3Dproton-pass-extension%26state%3DREDACTED-FOR-PUBLICATION%26independent%3D0%26prompt%3Dlogin%26promptBypass%3Dsso%26promptType%3Doffline%26pt%3Doffline%26t%3D2",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/54B6D80391099FC4A8EA9246B3B58E8E"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@5ed83977fcfa0f34249cafc7d96cab43b045927f/inspector.html?ws=localhost:9222/devtools/page/A99F48C458A80E6B771419A8390BA163",
+   "faviconUrl": "https://account.proton.me/assets/favicon.ico",
+   "id": "A99F48C458A80E6B771419A8390BA163",
+   "title": "Proton Account: Sign-in",
+   "type": "page",
+   "url": "https://account.proton.me/login",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/A99F48C458A80E6B771419A8390BA163"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@5ed83977fcfa0f34249cafc7d96cab43b045927f/inspector.html?ws=localhost:9222/devtools/page/07480C6A0D94713CA36714BE47E468BB",
+   "faviconUrl": "https://account.proton.me/assets/favicon.ico",
+   "id": "07480C6A0D94713CA36714BE47E468BB",
+   "parentId": "A99F48C458A80E6B771419A8390BA163",
+   "title": "chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/dropdown.html#iframe=176fe8b0",
+   "type": "iframe",
+   "url": "chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/dropdown.html#iframe=176fe8b0",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/07480C6A0D94713CA36714BE47E468BB"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@5ed83977fcfa0f34249cafc7d96cab43b045927f/worker_app.html?ws=localhost:9222/devtools/page/0006CA117C77D980470ADE4496FE9805",
+   "id": "0006CA117C77D980470ADE4496FE9805",
+   "title": "Service Worker chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/background.js",
+   "type": "service_worker",
+   "url": "chrome-extension://ghmbeldphafepmbegfdlkpapadhbakde/background.js",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/0006CA117C77D980470ADE4496FE9805"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@5ed83977fcfa0f34249cafc7d96cab43b045927f/inspector.html?ws=localhost:9222/devtools/page/56041A51B12DCA5B5D82F4037A8DF482",
+   "id": "56041A51B12DCA5B5D82F4037A8DF482",
+   "title": "",
+   "type": "worker",
+   "url": "",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/56041A51B12DCA5B5D82F4037A8DF482"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@5ed83977fcfa0f34249cafc7d96cab43b045927f/inspector.html?ws=localhost:9222/devtools/page/04B0EB7A749570BDE1B7B4583C46009B",
+   "id": "04B0EB7A749570BDE1B7B4583C46009B",
+   "title": "",
+   "type": "worker",
+   "url": "",
+   "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/04B0EB7A749570BDE1B7B4583C46009B"
+} ]
