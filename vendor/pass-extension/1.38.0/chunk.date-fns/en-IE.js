@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkproton_pass_extension=self.webpackChunkproton_pass_extension||[]).push([["date-fns/en-IE"],{72454(e,t,a){a.d(t,{default:()=>f});var n=a(86370),s=a(77569),o=a(87465),i=a(62727),r=a(28842);let f={code:"en-IE",formatDistance:n.A,formatLong:r.A,formatRelative:s.A,localize:o.A,match:i.A,options:{weekStartsOn:1,firstWeekContainsDate:4}}}}]);
