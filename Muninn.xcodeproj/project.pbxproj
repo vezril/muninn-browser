@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000010 /* Muninn.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Muninn.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000110 /* MuninnTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MuninnTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +17,22 @@
 			path = Muninn;
 			sourceTree = "<group>";
 		};
+		AA0000000000000000000120 /* MuninnTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MuninnTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AA0000000000000000000030 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000130 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000020 /* Muninn */,
+				AA0000000000000000000120 /* MuninnTests */,
 				AA0000000000000000000041 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000010 /* Muninn.app */,
+				AA0000000000000000000110 /* MuninnTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -56,6 +71,7 @@
 				AA0000000000000000000030 /* Frameworks */,
 				AA0000000000000000000080 /* Resources */,
 				AA0000000000000000000090 /* Embed About Metadata */,
+				AA0000000000000000000091 /* Embed Pass Bundle */,
 			);
 			buildRules = (
 			);
@@ -71,6 +87,28 @@
 			productReference = AA0000000000000000000010 /* Muninn.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0000000000000000000150 /* MuninnTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000160 /* Build configuration list for PBXNativeTarget "MuninnTests" */;
+			buildPhases = (
+				AA0000000000000000000170 /* Sources */,
+				AA0000000000000000000130 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0000000000000000000180 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000120 /* MuninnTests */,
+			);
+			name = MuninnTests;
+			packageProductDependencies = (
+			);
+			productName = MuninnTests;
+			productReference = AA0000000000000000000110 /* MuninnTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +120,10 @@
 				TargetAttributes = {
 					AA0000000000000000000050 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					AA0000000000000000000150 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = AA0000000000000000000050;
 					};
 				};
 			};
@@ -100,6 +142,7 @@
 			projectRoot = "";
 			targets = (
 				AA0000000000000000000050 /* Muninn */,
+				AA0000000000000000000150 /* MuninnTests */,
 			);
 		};
 /* End PBXProject section */
@@ -130,6 +173,21 @@
 			shellPath = /bin/sh;
 			shellScript = "set -eu\nRES=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$RES\"\nLOCK=\"${SRCROOT}/vendor/pass-extension/MANIFEST.lock\"\nif [ -f \"$LOCK\" ]; then cp \"$LOCK\" \"$RES/MANIFEST.lock\"; fi\nLATEST=$(ls -1 \"${SRCROOT}/research/regrep\" 2>/dev/null | sort | tail -1 || true)\nprintf '%s' \"${LATEST:-none}\" > \"$RES/RegrepLatest.txt\"\n";
 		};
+		AA0000000000000000000091 /* Embed Pass Bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed Pass Bundle";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nRES=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nLOCK=\"${SRCROOT}/vendor/pass-extension/MANIFEST.lock\"\nVERSION=$(/usr/bin/sed -n 's/.*\"extensionVersion\" *: *\"\\([^\"]*\\)\".*/\\1/p' \"$LOCK\")\nSRC=\"${SRCROOT}/vendor/pass-extension/${VERSION}\"\nif [ ! -d \"$SRC\" ]; then echo \"error: vendored Pass bundle $SRC not found\" >&2; exit 1; fi\nDEST=\"$RES/PassBundle\"\nrm -rf \"$DEST\"\nmkdir -p \"$DEST\"\ncp -R \"$SRC/\" \"$DEST/\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -140,7 +198,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000170 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA0000000000000000000180 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000050 /* Muninn */;
+			targetProxy = AA0000000000000000000181 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000181 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000050;
+			remoteInfo = Muninn;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin XCBuildConfiguration section */
 		AA0000000000000000000003 /* Debug */ = {
@@ -229,6 +312,42 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000161 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vezril.MuninnTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Muninn.app/Contents/MacOS/Muninn";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000162 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vezril.MuninnTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Muninn.app/Contents/MacOS/Muninn";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -246,6 +365,15 @@
 			buildConfigurations = (
 				AA0000000000000000000061 /* Debug */,
 				AA0000000000000000000062 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000160 /* Build configuration list for PBXNativeTarget "MuninnTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000161 /* Debug */,
+				AA0000000000000000000162 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

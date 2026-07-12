@@ -6,6 +6,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let aboutPanel = AboutPanelController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Under XCTest the app is only a host for WKWebView; show no window
+        // (keeps `xcodebuild test` headless — ground rule 2).
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            NSApp.setActivationPolicy(.prohibited)
+            return
+        }
+
+        if ShimDiagnostic.isEnabled {
+            ShimDiagnostic.run() // headless S1 boot; no window
+            return
+        }
+
         NSApp.setActivationPolicy(.regular)
         buildMenu()
 
