@@ -18,7 +18,9 @@ Analysis, Planning, and Solutioning (architecture) are **complete and approved**
 
 **M0 is EXITED** (Calvin, 2026-07-11 23:35 EDT — see `roadmap.md` §6): the Xcode scaffold builds/launches, the FR-25 gate is satisfied (`research/regrep/2026-07-11.md`; new API `runtime.getFrameId` → Tier 2/E5), and the Pass bundle v1.38.0 is vendored (`vendor/pass-extension/`, `tools/refresh-pass-bundle.sh`).
 
-**Next step in the pipeline: M1 walking-skeleton epics — E2 (Tier-1 stubs + message broker) and E3 (background host) in parallel, then E6 (auth-fork login, the first go/no-go gate).** Honor the ratified deviations (FR-12 stub is skeleton scope; FR-13 flows via the vendored fork.js) and the open spikes (S1/S2 gate E3/E6; S5/S6 gate E8/E4). Don't gold-plate — this is a solo passion project, not enterprise compliance.
+**E2+E3 are built (change `e2-e3-shim-core`): the shim core + background host.** S1 is retired — Proton's real v1.38.0 `background.js` boots CLEAN in the DedicatedWorker substrate (ADR-005 refined 2026-07-12: background.js runs in a Worker inside the hidden WKWebView because it uses `importScripts`). 16 XCTests green; refute-review blockers all fixed. Ports deferred to E6 (need a 2nd context). **Open finding: hidden-page JS timer throttling is CONFIRMED** (`research/nfr10-residency-2026-07-12.md`) — `chrome.alarms` is safe (native timer), but raw JS timers in background.js throttle; mitigation is E3-hardening before E6.
+
+**Next step in the pipeline: E6 (auth-fork login — the first go/no-go gate)**, preceded by burning down the timer-throttling mitigation and the S2 spike (fork.js postMessage fallback fires in WKWebView; nothing leaks `browserAPI` into page MAIN world). Then E4 (scheme handler / S6) and E5 (injection + frame registry, incl. `runtime.getFrameId` per the E1 re-grep). Honor the ratified deviations (FR-12 stub is skeleton scope; FR-13 flows via the vendored fork.js). Don't gold-plate — this is a solo passion project, not enterprise compliance.
 
 ## Ground rules (non-negotiable)
 

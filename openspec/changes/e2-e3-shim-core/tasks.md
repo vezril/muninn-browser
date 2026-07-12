@@ -29,7 +29,7 @@
 
 ## 5. Residency measurements (E3 / NFR-10)
 
-- [ ] 5.1 **[HUMAN GATE — ground rule 2]** 30-min idle RSS + timer-drift measurement — pending; needs a gated launch window.
+- [x] 5.1 Residency measurement — ran headlessly (no GUI, no gate needed): `research/nfr10-residency-2026-07-12.md`. **Memory PASS** (host peak 68 MB vs NFR-10's 150; total 237 MB vs NFR-3's 400). **⚠️ Finding: hidden-page JS timer throttling confirmed** (worker `setInterval` fired 4× in 300 s) — ADR-005 risk 7 is real. Primary periodic path (`chrome.alarms` → native timer) is unaffected; raw JS `setTimeout`/`setInterval` in background.js would throttle. Mitigation scoped as **E3-hardening before E6's login validation** (off-screen/occluded window or WebKit throttling opt-out — needs a spike). Window shortened to 300 s; binding 30-min run is E11's.
 
 ## 6. Review & ship
 

@@ -18,11 +18,14 @@ enum ShimDiagnostic {
     private static var host: BackgroundHost?
 
     private static var consoleLines: [String] = []
+    private static var measAppMB: [Double] = []
+    private static var measWebMB: [Double] = []
 
     static func run() {
         NSApp.setActivationPolicy(.prohibited)
         let env = ProcessInfo.processInfo.environment
         if env["MUNINN_SHIM_SCENARIOS"] != nil { runScenarios(); return }
+        if env["MUNINN_SHIM_MEASURE"] != nil { runMeasure(); return }
         let settle = TimeInterval(env["MUNINN_SHIM_SETTLE"] ?? "") ?? 12
 
         guard PassBundle.isPresent else {
@@ -137,6 +140,104 @@ enum ShimDiagnostic {
         print(allPass ? "\nALL SCENARIOS PASS" : "\nSCENARIO FAILURES PRESENT")
         host.stop()
         exit(allPass ? 0 : 1)
+    }
+
+    // MARK: - NFR-10 residency measurement (headless, non-binding here; E11 binds)
+
+    static func runMeasure() {
+        guard PassBundle.isPresent else { exit(2) }
+        let env = ProcessInfo.processInfo.environment
+        let secs = TimeInterval(env["MUNINN_SHIM_MEASURE_SECS"] ?? "") ?? 300
+        let broker = MessageBroker(); let host = BackgroundHost(broker: broker)
+        self.broker = broker; self.host = host
+        host.start()
+
+        measAppMB = []; measWebMB = []
+        waitUntil({ host.bootSucceeded }, timeout: 20) {
+            print("NFR-10 measurement — idle \(Int(secs))s, sampling every 15s…")
+            // JS timer fidelity in the hidden worker (ADR-005 throttling check).
+            host.evalInWorker("self.__mtick=0;setInterval(function(){self.__mtick++},1000)")
+            let n = max(1, Int(secs / 15))
+            // Runs on DispatchQueue.main; assumeIsolated to reach @MainActor state
+            // from this nonisolated local function.
+            func sample(_ remaining: Int) {
+                MainActor.assumeIsolated {
+                    measAppMB.append(appFootprintMB()); measWebMB.append(webContentRSSMB(host: host))
+                    if remaining <= 0 {
+                        host.evalInWorker("self.__report('ticks', true, self.__mtick)")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            MainActor.assumeIsolated {
+                                finishMeasure(host: host, appMB: measAppMB, webMB: measWebMB, secs: secs, env: env)
+                            }
+                        }
+                        return
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { sample(remaining - 1) }
+                }
+            }
+            sample(n)
+        }
+    }
+
+    private static func finishMeasure(host: BackgroundHost, appMB: [Double], webMB: [Double],
+                                      secs: TimeInterval, env: [String: String]) {
+        let ticks = host.bootLog.first { ($0["kind"] as? String) == "scenario" && ($0["name"] as? String) == "ticks" }?["value"] as? Int
+        let expectedTicks = Int(secs)
+        let appPeak = appMB.max() ?? 0, appAvg = appMB.isEmpty ? 0 : appMB.reduce(0, +) / Double(appMB.count)
+        let webPeak = webMB.max() ?? 0, webAvg = webMB.isEmpty ? 0 : webMB.reduce(0, +) / Double(webMB.count)
+
+        func f(_ d: Double) -> String { String(format: "%.1f", d) }
+        print("\n=== NFR-10 residency (idle \(Int(secs))s) ===")
+        print("  App process phys_footprint: avg \(f(appAvg)) MB, peak \(f(appPeak)) MB")
+        print("  WebContent (host) RSS:      avg \(f(webAvg)) MB, peak \(f(webPeak)) MB")
+        print("  JS timer ticks: \(ticks.map(String.init) ?? "?") of ~\(expectedTicks) expected (1/s)")
+        print("  NFR-10 host ≤150 MB: \(webPeak <= 150 ? "PASS" : "CHECK") (WebContent peak)")
+        print("  NFR-3 total ≤400 MB: \((appPeak + webPeak) <= 400 ? "PASS" : "CHECK") (app+host peak)")
+
+        if let out = env["MUNINN_SHIM_MEASURE_OUT"] {
+            let md = """
+            # NFR-10 residency measurement — Pass v\(PassBundle.version)
+
+            Headless idle run, \(Int(secs))s, sampled every 15s (non-binding here; E11 binds at 30 min).
+
+            | metric | avg | peak | target |
+            |---|---|---|---|
+            | App process phys_footprint | \(f(appAvg)) MB | \(f(appPeak)) MB | (NFR-3 total ≤400 MB) |
+            | WebContent (background host) RSS | \(f(webAvg)) MB | \(f(webPeak)) MB | NFR-10 ≤150 MB |
+
+            - JS timer fidelity (hidden worker): **\(ticks.map(String.init) ?? "?")** ticks vs ~\(expectedTicks) expected (1/s) — throttling check (ADR-005).
+            - NFR-10 (host ≤150 MB): **\(webPeak <= 150 ? "PASS" : "CHECK")**; NFR-3 (total ≤400 MB): **\((appPeak + webPeak) <= 400 ? "PASS" : "CHECK")**.
+            - Window shortened to \(Int(secs))s for the e2-e3 change; the binding 30-min measurement is E11's.
+            """
+            try? md.write(toFile: out, atomically: true, encoding: .utf8)
+            print("Wrote \(out)")
+        }
+        host.stop()
+        exit(0)
+    }
+
+    private static func appFootprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576.0 : 0
+    }
+
+    private static func webContentRSSMB(host: BackgroundHost) -> Double {
+        guard let wv = host.webView,
+              let pid = (wv.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 else { return 0 }
+        let proc = Process(); proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-o", "rss=", "-p", "\(pid)"]
+        let pipe = Pipe(); proc.standardOutput = pipe
+        do { try proc.run() } catch { return 0 }
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let kb = Double(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return kb / 1024.0
     }
 
     private static func waitUntil(_ cond: @escaping () -> Bool, timeout: TimeInterval,

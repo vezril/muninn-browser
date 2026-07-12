@@ -148,7 +148,9 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
             if let t = d["text"] { cinfo["text"] = t } else if let l = d["len"] { cinfo["len"] = l }
             host.note(kind: "console", info: cinfo)
         case "scenario":
-            host.note(kind: "scenario", info: ["name": d["name"] ?? "?", "ok": d["ok"] ?? false])
+            var sinfo: [String: Any] = ["name": d["name"] ?? "?", "ok": d["ok"] ?? false]
+            if let v = d["value"] { sinfo["value"] = v }
+            host.note(kind: "scenario", info: sinfo)
         case "workerError", "workerRejection":
             host.note(kind: kind, info: d)
         case "audit":

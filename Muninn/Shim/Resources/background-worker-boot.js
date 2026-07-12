@@ -36,7 +36,7 @@
 
   // Test-only signal channel (Muninn-injected scenarios), kept separate from
   // Proton's console so test markers never depend on console text capture.
-  self.__report = function (name, ok) { forward("scenario", { name: name, ok: !!ok }); };
+  self.__report = function (name, ok, value) { forward("scenario", { name: name, ok: !!ok, value: value }); };
 
   self.addEventListener("error", function (e) {
     forward("workerError", { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno });
