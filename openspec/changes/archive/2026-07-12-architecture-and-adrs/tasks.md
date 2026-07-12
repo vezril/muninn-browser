@@ -45,4 +45,5 @@
   — Done 2026-07-11 22:55 EDT: verdict **"Approve"** recorded in §10, ratifying the three flagged deviations (distribution narrowing, FR-12 promotion, FR-13 mechanism swap).
 - [x] 6.2 On approval: flip accepted ADR statuses to `Accepted` in the same commit; update `CLAUDE.md` artifact state (Solutioning: architecture done, next per-epic changes starting with E1)
   — Done: ADR-001/003/004/005/007/008 → Accepted; ADR-002/006 → Accepted (needs spike S5/S6); CLAUDE.md updated (next: per-epic changes, E1 first).
-- [ ] 6.3 Ship via `/git-ship` (PR-gated main)
+- [x] 6.3 Ship via `/git-ship` (PR-gated main)
+  — Done 2026-07-11: PR #2 merged to main as `024541d` (merge train, Calvin-authorized).
