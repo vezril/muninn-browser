@@ -4,16 +4,19 @@ Muninn is a privacy-first, Apple-native macOS browser with a fully custom shell,
 
 ## Where this project stands (artifact state)
 
-Analysis phase is **complete**; Planning artifacts are **drafted, awaiting Calvin's approval gate**. The artifacts in this directory are the record:
+Analysis, Planning, and Solutioning (architecture) are **complete and approved** (PRD + roadmap: 2026-07-11 21:14 EDT; architecture + ADRs: 2026-07-11 22:55 EDT). The artifacts in this directory are the record:
 
 - `product-brief.md` — vision, MVP (walking skeleton), constraints, open questions. **Start here.**
 - `decisions.md` — locked decisions (name, engine, language split, fallbacks). Do not re-litigate without new evidence.
 - `research/spike-a-results.md` — engine spike (CEF/JCEF ruled out; signed off 2026-07-11).
 - `research/spike-b-proton-pass-api-inventory.md` — the shim spec (Proton's Safari build profile; ~45 methods; Tier 1/2/3 breakdown; ordered risk list).
-- `prd.md` — v0.1 DRAFT (2026-07-11): FR-1…29, NFR-1…10, MVP cutline (§9), proposed resolutions to all open questions (§12). Passed checker review + mechanical ID/cutline verification. **Awaiting Calvin's approval (§13).**
-- `roadmap.md` — v0.1 DRAFT: milestones M0–M3 + Sync horizon, epics E1–E12, full FR→epic traceability, dependency DAG. Inherits the PRD's pending gate (§6).
+- `prd.md` — v0.1 **APPROVED** (2026-07-11): FR-1…29, NFR-1…10, MVP cutline (§9), resolutions to all open questions (§12). The locked "what".
+- `roadmap.md` — v0.1 **APPROVED**: milestones M0–M3 + Sync horizon, epics E1–E12, full FR→epic traceability, dependency DAG. The plan of record.
+- `architecture.md` — v0.1 **APPROVED**: HLD (closed-microkernel modular monolith, C4 diagrams, 9-risk table, 3 ratified deviations in §10).
+- `adr/ADR-001…008` — all **Accepted**; ADR-002 and ADR-006 carry open spikes (S5: pktap eproc + proxy routing, gates E8; S6: scheme-request initiator identification, gates E4). Spikes S1/S2 gate E3/E6 (see ADR-001/-005).
+- `openspec/changes/architecture-and-adrs/` — the completed Solutioning change (research evidence under `research/`).
 
-**Next step in the pipeline: HUMAN GATE — Calvin reviews/approves `prd.md` (§13) and `roadmap.md` (§6)** (record verdicts verbatim with timestamps). After approval: Solutioning — architecture + ADRs (solution-architect), then per-epic OpenSpec changes with stories, then the walking skeleton (E1 first: git init, Xcode scaffold, FR-25 re-grep gate). Don't jump to code before the architecture exists as a file; don't gold-plate either — this is a solo passion project, not enterprise compliance.
+**Next step in the pipeline: per-epic OpenSpec changes starting with E1** (git ✅ done; Xcode scaffold, FR-25 re-grep gate, ADR-001 bundle vendoring) — stories per the roadmap's epics, honoring the ratified deviations (FR-12 stub is now skeleton scope; FR-13 flows via fork.js). Don't gold-plate — this is a solo passion project, not enterprise compliance.
 
 ## Ground rules (non-negotiable)
 

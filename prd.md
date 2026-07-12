@@ -1,8 +1,8 @@
 # Muninn — Product Requirements Document (PRD)
 
-**Version:** 0.1 DRAFT
+**Version:** 0.1
 **Date:** 2026-07-11
-**Status:** Awaiting approval — **HUMAN GATE (Calvin)**
+**Status:** **APPROVED** — Calvin Ference, 2026-07-11 21:14 EDT (§13)
 **Provenance:** Derived from `product-brief.md`, `decisions.md`, `CLAUDE.md` (ground rules & technical facts), `research/spike-a-results.md`, and `research/spike-b-proton-pass-api-inventory.md` (all dated 2026-07-11). Locked decisions D1–D4 in `decisions.md` are treated as constraints, not re-litigated here.
 **Review record:** Draft reviewed by a separate checker agent 2026-07-11; 6 blocking findings fixed in this revision (JTBD-3 deferral made explicit, daily-driver FR-27…29 added, egress audit scoped to shell/shim-originated traffic, FR-10/FR-17 acceptance made executable, D4 fallback contingency referenced).
 
@@ -364,6 +364,6 @@ All other FRs (P1/P2) are explicitly **out of scope** for the walking skeleton a
 
 **HUMAN GATE — Calvin Ference**
 
-> *(verbatim verdict and timestamp to be recorded here upon review)*
+> **"Approve"** — recorded 2026-07-11 21:14 EDT (verdict given via review Q&A after a guided walkthrough of §9, §12, and the checker-review fixes; no amendments).
 
-Status: **Awaiting approval.**
+Status: **APPROVED.** This PRD is the locked "what" — changes from here go through a new revision with its own gate.
