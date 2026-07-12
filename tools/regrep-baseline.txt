@@ -1,0 +1,62 @@
+# Spike B baseline (2026-07-11, Pass v1.38.2, ProtonMail/WebClients@main)
+# One namespace.method per line — the API surface Spike B recorded and triaged.
+# tools/regrep-inventory.sh diffs the current inventory against this file;
+# NEW lines (in inventory, not here) must be triaged Tier 1/2/3 in the dated
+# artifact before shim work proceeds (FR-25). Lines here but absent from a new
+# inventory are retirements — note them, they shrink the shim.
+# Updated 2026-07-11 by the first E1 re-grep run (see research/regrep/2026-07-11.md triage).
+action.setBadgeBackgroundColor
+action.setBadgeText
+alarms.clear
+alarms.clearAll
+alarms.create
+alarms.get
+alarms.onAlarm
+commands.getAll
+commands.onCommand
+permissions.contains
+permissions.onAdded
+permissions.onRemoved
+permissions.request
+privacy.services
+runtime.connect
+runtime.connectNative
+runtime.getBackgroundPage
+runtime.getBrowserInfo
+runtime.getFrameId
+runtime.getManifest
+runtime.getURL
+runtime.id
+runtime.lastError
+runtime.onConnect
+runtime.onInstalled
+runtime.onMessage
+runtime.onMessageExternal
+runtime.onStartup
+runtime.onUpdateAvailable
+runtime.reload
+runtime.requestUpdateCheck
+runtime.sendMessage
+runtime.sendNativeMessage
+scripting.executeScript
+scripting.insertCSS
+storage.local
+storage.session
+tabs.create
+tabs.get
+tabs.getCurrent
+tabs.onRemoved
+tabs.onUpdated
+tabs.query
+tabs.remove
+tabs.sendMessage
+tabs.update
+webNavigation.getAllFrames
+webNavigation.getFrame
+webRequest.onAuthRequired
+webRequest.onBeforeRequest
+webRequest.onBeforeSendHeaders
+webRequest.onCompleted
+webRequest.onErrorOccurred
+windows.create
+windows.update

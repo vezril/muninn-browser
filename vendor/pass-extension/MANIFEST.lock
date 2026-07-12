@@ -1,0 +1,9 @@
+{
+  "source": "safari-appex",
+  "sourcePath": "/Applications/Proton Pass for Safari.app/Contents/PlugIns/Safari Extension.appex/Contents/Resources",
+  "extensionVersion": "1.38.0",
+  "webClientsRef": "proton-pass@1.38.0 (presumed release tag; MAS artifact carries no commit)",
+  "sha256": "11497c8236ad0fcefa2d2d3f649c7fdab9d2495457d6f3d2c9ed1362a4549ece",
+  "extractedAt": "2026-07-11",
+  "files": 273
+}
