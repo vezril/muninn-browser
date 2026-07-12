@@ -45,4 +45,5 @@
   — Done 2026-07-11: pristine clone of the branch → BUILD SUCCEEDED; refresh script no-op correct; vendored sha256 MATCH post-clone; 0 untriaged regrep entries; About resources embedded. Gated launch scenario verified earlier by Calvin ("Both pass").
 - [x] 6.2 Ship via git-ship (PR-gated main); PR cites this change and the M0 exit criteria
   — Branch `feat/e1-foundations` pushed (`67ec67b` + task-state commit); PR opened, merge gated on Calvin.
-- [ ] 6.3 **[HUMAN GATE — ground rule 3]** Record Calvin's M0 exit verdict (verbatim + timestamp) in `roadmap.md` §1 M0 row or a note under §6, then update `CLAUDE.md` state (E1 done → E2/E3 unblocked)
+- [x] 6.3 **[HUMAN GATE — ground rule 3]** Record Calvin's M0 exit verdict (verbatim + timestamp) in `roadmap.md` §1 M0 row or a note under §6, then update `CLAUDE.md` state (E1 done → E2/E3 unblocked)
+  — Done: verdict **"Approve M0 exit"** recorded 2026-07-11 23:35 EDT in `roadmap.md` §6 (milestone exit verdicts); CLAUDE.md updated (next: E2/E3 → E6).

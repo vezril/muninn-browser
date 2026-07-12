@@ -16,7 +16,9 @@ Analysis, Planning, and Solutioning (architecture) are **complete and approved**
 - `adr/ADR-001…008` — all **Accepted**; ADR-002 and ADR-006 carry open spikes (S5: pktap eproc + proxy routing, gates E8; S6: scheme-request initiator identification, gates E4). Spikes S1/S2 gate E3/E6 (see ADR-001/-005).
 - `openspec/changes/architecture-and-adrs/` — the completed Solutioning change (research evidence under `research/`).
 
-**Next step in the pipeline: per-epic OpenSpec changes starting with E1** (git ✅ done; Xcode scaffold, FR-25 re-grep gate, ADR-001 bundle vendoring) — stories per the roadmap's epics, honoring the ratified deviations (FR-12 stub is now skeleton scope; FR-13 flows via fork.js). Don't gold-plate — this is a solo passion project, not enterprise compliance.
+**M0 is EXITED** (Calvin, 2026-07-11 23:35 EDT — see `roadmap.md` §6): the Xcode scaffold builds/launches, the FR-25 gate is satisfied (`research/regrep/2026-07-11.md`; new API `runtime.getFrameId` → Tier 2/E5), and the Pass bundle v1.38.0 is vendored (`vendor/pass-extension/`, `tools/refresh-pass-bundle.sh`).
+
+**Next step in the pipeline: M1 walking-skeleton epics — E2 (Tier-1 stubs + message broker) and E3 (background host) in parallel, then E6 (auth-fork login, the first go/no-go gate).** Honor the ratified deviations (FR-12 stub is skeleton scope; FR-13 flows via the vendored fork.js) and the open spikes (S1/S2 gate E3/E6; S5/S6 gate E8/E4). Don't gold-plate — this is a solo passion project, not enterprise compliance.
 
 ## Ground rules (non-negotiable)
 
