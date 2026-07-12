@@ -6,6 +6,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let aboutPanel = AboutPanelController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ShimDiagnostic.isEnabled {
+            ShimDiagnostic.run() // headless S1 boot; no window
+            return
+        }
+
         NSApp.setActivationPolicy(.regular)
         buildMenu()
 
