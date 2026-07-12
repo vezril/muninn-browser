@@ -35,7 +35,7 @@
 
 - [x] 6.1 Pristine-clone verify — fresh clone of the branch: `xcodebuild` BUILD SUCCEEDED + all 16 tests green (TEST SUCCEEDED). Self-contained.
 - [x] 6.2 Refute-oriented review pass — reviewer verdict BLOCKERS; **all 6 real findings fixed**: (1) credential blocker — Proton `log/info/debug` console text no longer captured (only warn/error), test markers moved to a separate `__report` channel; (2) activity-assertion leak on watchdog restart (guard `activity == nil`); (3) Swift-6 timer-handler isolation (`MainActor.assumeIsolated`); (4) `runtime.connect` synchronous inert Port stub (was a rejecting Promise → TypeError risk); (5) path-traversal sibling-prefix boundary; (6) Keychain `SecItemAdd` duplicate handling; plus `storage.onChanged` now fires and root-Proxy `then` guard. MAIN-world leak + broker payload opacity reviewed **clean**. Re-verified: scenarios PASS, S1 CLEAN, build green.
-- [ ] 6.3 Ship via git-ship; update `CLAUDE.md` state.
+- [x] 6.3 Shipped — PR #7 opened (branch `feat/e2-e3-shim-core`); `CLAUDE.md` state advanced to E6-next with the timer-throttling finding flagged. Merge gated on Calvin (`/merge`).
 
 ---
 
