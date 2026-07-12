@@ -57,12 +57,16 @@ final class AlarmRegistry {
             timer.schedule(deadline: .now() + delaySec)
         }
         timer.setEventHandler { [weak self] in
-            guard let self, let current = self.alarms[alarm.name] else { return }
-            self.onFire?(current)
-            if current.periodInMinutes == nil {
-                self.timers[alarm.name]?.cancel()
-                self.timers[alarm.name] = nil
-                self.alarms.removeValue(forKey: alarm.name)
+            // Timer source is on DispatchQueue.main, so we are on the main actor;
+            // assert it explicitly for Swift 6 isolation checking.
+            MainActor.assumeIsolated {
+                guard let self, let current = self.alarms[alarm.name] else { return }
+                self.onFire?(current)
+                if current.periodInMinutes == nil {
+                    self.timers[alarm.name]?.cancel()
+                    self.timers[alarm.name] = nil
+                    self.alarms.removeValue(forKey: alarm.name)
+                }
             }
         }
         timers[alarm.name] = timer

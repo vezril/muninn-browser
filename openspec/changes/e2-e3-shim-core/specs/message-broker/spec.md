@@ -13,8 +13,10 @@ The shim SHALL route `runtime.sendMessage` from any registered context (content-
 - **WHEN** a message is sent while the background host is terminated (pre-watchdog-restart)
 - **THEN** the sender observes a rejected promise / `lastError`, not a hang
 
-### Requirement: Persistent ports
+### Requirement: Persistent ports (DEFERRED to E6)
 The shim SHALL implement `runtime.connect`/`onConnect` with broker-owned port state: ordered, at-most-once delivery per port, disconnect events on context destruction, and survival across many exchanges.
+
+> **Scope note (Calvin, 2026-07-12):** full port semantics require a *second* live context (content script/page) to exchange with; that context first exists in E6. This requirement is therefore built and verified in **E6**, not e2-e3-shim-core. Until then the broker rejects `connect` cleanly (no hang, no crash). The scenarios below are E6 acceptance.
 
 #### Scenario: Port survives sustained exchange
 - **WHEN** a port is opened and 50 interleaved messages are exchanged in both directions

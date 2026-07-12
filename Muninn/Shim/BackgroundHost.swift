@@ -40,12 +40,16 @@ final class BackgroundHost: NSObject {
         self.webView = webView
         broker.eventTarget = webView
 
-        // Keep the host resident: hold a process activity assertion (ADR-005;
-        // process-granular, so app-wide by nature — the minimum-necessary
-        // exemption under NFR-10).
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleSystemSleepDisabled],
-            reason: "Muninn background host resident")
+        // Keep the host resident: hold ONE process activity assertion for the
+        // host's lifetime (ADR-005; process-granular, minimum-necessary under
+        // NFR-10). Guard against re-acquiring on watchdog restart — start() is
+        // called again by restart(), and a second beginActivity would leak the
+        // first assertion (found in review).
+        if activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleSystemSleepDisabled],
+                reason: "Muninn background host resident")
+        }
 
         webView.load(URLRequest(url: PassBundle.originURL.appendingPathComponent("background-host.html")))
         note(kind: "hostStarting", info: ["version": PassBundle.version])
@@ -139,7 +143,12 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         let kind = (d["__shim"] as? String) ?? "audit"
         switch kind {
         case "console":
-            host.note(kind: "console", info: ["level": d["level"] ?? "log", "text": d["text"] ?? ""])
+            // Only warn/error carry text (credential safety); others length-only.
+            var cinfo: [String: Any] = ["level": d["level"] ?? "log"]
+            if let t = d["text"] { cinfo["text"] = t } else if let l = d["len"] { cinfo["len"] = l }
+            host.note(kind: "console", info: cinfo)
+        case "scenario":
+            host.note(kind: "scenario", info: ["name": d["name"] ?? "?", "ok": d["ok"] ?? false])
         case "workerError", "workerRejection":
             host.note(kind: kind, info: d)
         case "audit":

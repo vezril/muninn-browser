@@ -84,8 +84,12 @@
   };
 
   // Members we model natively (async). Anything not listed is audited.
+  // NOTE: `connect` is NOT here — Chrome's connect() is synchronous and returns
+  // a Port, so a Promise would break `connect().postMessage(...)`. It is
+  // special-cased below to return a synchronous inert Port stub (ports are
+  // fully implemented in E6 with a real second context).
   var MODELLED = {
-    runtime: ["sendMessage", "connect", "reload", "getPlatformInfo", "getBrowserInfo",
+    runtime: ["sendMessage", "reload", "getPlatformInfo", "getBrowserInfo",
               "requestUpdateCheck", "sendNativeMessage", "connectNative", "setUninstallURL"],
     storage: ["__local", "__session"], // handled via storage.local/.session objects
     alarms: ["create", "get", "getAll", "clear", "clearAll"],
@@ -145,6 +149,18 @@
       base.getFrameId = SYNC["runtime.getFrameId"];
       base.lastError = null;
       Object.defineProperty(base, "id", { get: function () { return CANONICAL_ID; }, enumerable: true });
+      // Synchronous inert Port stub (real ports: E6). Returns immediately so
+      // `runtime.connect().postMessage(...)` never hits a TypeError at boot.
+      base.connect = function () {
+        var disc = [];
+        var port = {
+          name: "", onMessage: eventHub("__deadPort.onMessage"),
+          onDisconnect: { addListener: function (f) { disc.push(f); }, removeListener: function () {} },
+          postMessage: function () { /* no peer yet */ },
+          disconnect: function () { disc.forEach(function (f) { try { f(port); } catch (_) {} }); },
+        };
+        return port;
+      };
     }
 
     // Proxy: unmodelled access -> audited rejecting function (never throws)
@@ -168,6 +184,7 @@
   var api = new Proxy(Object.create(null), {
     get: function (target, prop) {
       if (typeof prop === "symbol") return undefined;
+      if (prop === "then") return undefined; // don't let `await browser` create a "then" namespace
       if (!(prop in target)) {
         if (NAMESPACES.indexOf(String(prop)) < 0) audit("<root>", String(prop), "namespace");
         target[prop] = makeNamespace(String(prop));

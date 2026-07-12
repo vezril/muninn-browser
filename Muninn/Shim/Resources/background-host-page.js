@@ -46,6 +46,7 @@
         case "workerError":
         case "workerRejection":
         case "audit":
+        case "scenario":
           audit(d);
           break;
       }

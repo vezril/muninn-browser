@@ -9,20 +9,34 @@
     try { self.postMessage(Object.assign({ __shim: kind }, payload)); } catch (_) {}
   }
 
-  // Console capture — a Worker's console is not visible to native otherwise.
+  // Console capture. Ground rule 1 / NFR-8: background.js is unmodified
+  // third-party code that may log vault data. Only warn/error carry text (the
+  // S1 clean-boot signal is unhandled exceptions / missing-API TypeErrors,
+  // which are error-level); log/info/debug forward LENGTH ONLY, never content.
   ["log", "info", "warn", "error", "debug"].forEach(function (level) {
     var orig = self.console && self.console[level];
+    var keepsText = (level === "warn" || level === "error");
     self.console[level] = function () {
-      var parts = [];
-      for (var i = 0; i < arguments.length; i++) {
-        var a = arguments[i];
-        try { parts.push(typeof a === "string" ? a : JSON.stringify(a)); }
-        catch (_) { parts.push(String(a)); }
+      if (keepsText) {
+        var parts = [];
+        for (var i = 0; i < arguments.length; i++) {
+          var a = arguments[i];
+          try { parts.push(typeof a === "string" ? a : JSON.stringify(a)); }
+          catch (_) { parts.push(String(a)); }
+        }
+        forward("console", { level: level, text: parts.join(" ") });
+      } else {
+        var len = 0;
+        for (var j = 0; j < arguments.length; j++) { try { len += String(arguments[j]).length; } catch (_) {} }
+        forward("console", { level: level, len: len }); // no content
       }
-      forward("console", { level: level, text: parts.join(" ") });
       if (orig) try { orig.apply(self.console, arguments); } catch (_) {}
     };
   });
+
+  // Test-only signal channel (Muninn-injected scenarios), kept separate from
+  // Proton's console so test markers never depend on console text capture.
+  self.__report = function (name, ok) { forward("scenario", { name: name, ok: !!ok }); };
 
   self.addEventListener("error", function (e) {
     forward("workerError", { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno });

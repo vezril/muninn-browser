@@ -77,26 +77,21 @@ enum ShimDiagnostic {
         let host = BackgroundHost(broker: broker)
         self.broker = broker; self.host = host
 
-        host.onBootEvent = { entry in
-            if entry["kind"] as? String == "console", let t = entry["text"] as? String {
-                consoleLines.append(t)
-            }
-        }
         host.start()
 
-        // Wait for boot, then inject scenarios.
+        // Wait for boot, then inject scenarios (results come back via __report).
         waitUntil({ host.bootSucceeded }, timeout: 15) {
             let scenarios: [String] = [
                 // round-trip: worker -> page -> native broker -> back
-                "browser.storage.local.set({__scn:'v1'}).then(function(){return browser.storage.local.get('__scn')}).then(function(r){console.log('SCN storage-roundtrip '+(r.__scn==='v1'?'PASS':'FAIL'))}).catch(function(e){console.log('SCN storage-roundtrip FAIL '+e)})",
+                "browser.storage.local.set({__scn:'v1'}).then(function(){return browser.storage.local.get('__scn')}).then(function(r){self.__report('storage-roundtrip', r.__scn==='v1')}).catch(function(){self.__report('storage-roundtrip', false)})",
                 // event push: native alarm -> worker listener
-                "browser.alarms.onAlarm.addListener(function(a){if(a.name==='__scnA')console.log('SCN alarm-fire PASS')});browser.alarms.create('__scnA',{delayInMinutes:0.02})",
+                "browser.alarms.onAlarm.addListener(function(a){if(a.name==='__scnA')self.__report('alarm-fire', true)});browser.alarms.create('__scnA',{delayInMinutes:0.02})",
                 // sendMessage must resolve/reject, never hang
-                "browser.runtime.sendMessage({p:1}).then(function(){console.log('SCN sendmessage PASS')},function(){console.log('SCN sendmessage PASS')})",
+                "browser.runtime.sendMessage({p:1}).then(function(){self.__report('sendmessage', true)},function(){self.__report('sendmessage', true)})",
                 // nativeMessaging benign (no throw at access)
-                "try{var p=browser.runtime.connectNative('x');(p&&p.then)?p.then(function(){console.log('SCN nativemsg PASS')},function(){console.log('SCN nativemsg PASS')}):console.log('SCN nativemsg PASS')}catch(e){console.log('SCN nativemsg FAIL '+e)}",
+                "try{var p=browser.runtime.connectNative('x');(p&&p.then)?p.then(function(){self.__report('nativemsg', true)},function(){self.__report('nativemsg', true)}):self.__report('nativemsg', true)}catch(e){self.__report('nativemsg', false)}",
                 // opacity: store a secret; native must never log its bytes
-                "browser.storage.local.set({__secret:'\(secret)'}).then(function(){console.log('SCN opacity-setup done')})",
+                "browser.storage.local.set({__secret:'\(secret)'}).then(function(){self.__report('opacity-setup', true)})",
             ]
             for s in scenarios { host.evalInWorker(s) }
 
@@ -107,7 +102,11 @@ enum ShimDiagnostic {
 
     private static func finishScenarios(broker: MessageBroker, host: BackgroundHost) {
         var results: [(String, Bool)] = []
-        func sawPass(_ name: String) -> Bool { consoleLines.contains { $0 == "SCN \(name) PASS" } }
+        func sawPass(_ name: String) -> Bool {
+            host.bootLog.contains {
+                ($0["kind"] as? String) == "scenario" && ($0["name"] as? String) == name && ($0["ok"] as? Bool) == true
+            }
+        }
 
         results.append(("broker-round-trip", sawPass("storage-roundtrip")))
         results.append(("alarm-event-push", sawPass("alarm-fire")))

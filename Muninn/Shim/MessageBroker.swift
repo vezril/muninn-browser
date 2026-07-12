@@ -73,10 +73,33 @@ final class MessageBroker: NSObject {
         switch parts[1] {
         case "get": return storage.get(area, args.first)
         case "set":
-            if let items = args.first as? [String: Any] { storage.set(area, items) }
+            if let items = args.first as? [String: Any] {
+                let before = storage.get(area, Array(items.keys))
+                storage.set(area, items)
+                var changes: [String: Any] = [:]
+                for (k, v) in items {
+                    var c: [String: Any] = ["newValue": v]
+                    if let old = before[k] { c["oldValue"] = old }
+                    changes[k] = c
+                }
+                fireStorageChanged(area: parts[0], changes: changes)
+            }
             return NSNull()
-        case "remove": storage.remove(area, args.first); return NSNull()
-        case "clear": storage.clear(area); return NSNull()
+        case "remove":
+            let keys: [String] = (args.first as? String).map { [$0] } ?? (args.first as? [String]) ?? []
+            let before = storage.get(area, keys)
+            storage.remove(area, args.first)
+            var changes: [String: Any] = [:]
+            for k in keys where before[k] != nil { changes[k] = ["oldValue": before[k]!] }
+            fireStorageChanged(area: parts[0], changes: changes)
+            return NSNull()
+        case "clear":
+            let before = storage.get(area, nil)
+            storage.clear(area)
+            var changes: [String: Any] = [:]
+            for (k, v) in before { changes[k] = ["oldValue": v] }
+            fireStorageChanged(area: parts[0], changes: changes)
+            return NSNull()
         case "getBytesInUse": return 0
         default: record(ns: "storage", member: method, kind: "call"); throw ShimError("unmodelled storage.\(method)")
         }
@@ -155,6 +178,11 @@ final class MessageBroker: NSObject {
     }
 
     // MARK: - events
+
+    private func fireStorageChanged(area: String, changes: [String: Any]) {
+        guard !changes.isEmpty else { return }
+        pushEvent(key: "storage.onChanged", args: [changes, area])
+    }
 
     func pushEvent(key: String, args: [Any]) {
         guard let webView = eventTarget else { return }

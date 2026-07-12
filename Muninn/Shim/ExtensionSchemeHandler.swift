@@ -60,10 +60,13 @@ final class ExtensionSchemeHandler: NSObject, WKURLSchemeHandler {
                 return try? Data(contentsOf: u)
             }
         }
-        // Everything else is a vendored bundle file. Guard against traversal.
+        // Everything else is a vendored bundle file. Guard against traversal —
+        // compare with a trailing separator so a sibling dir sharing the prefix
+        // (…/PassBundleEVIL) can't pass a bare hasPrefix(…/PassBundle) check.
         guard let root = PassBundle.rootURL else { return nil }
+        let rootPath = root.standardizedFileURL.path
         let target = root.appendingPathComponent(path).standardizedFileURL
-        guard target.path.hasPrefix(root.standardizedFileURL.path) else { return nil }
+        guard target.path == rootPath || target.path.hasPrefix(rootPath + "/") else { return nil }
         return try? Data(contentsOf: target)
     }
 

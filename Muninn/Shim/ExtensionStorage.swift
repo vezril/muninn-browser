@@ -104,15 +104,8 @@ final class ExtensionStorage {
     private static let keychainAccount = "com.vezril.Muninn.extension-storage-key"
 
     private static func keychainKey() -> SymmetricKey {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainAccount,
-            kSecReturnData as String: true,
-        ]
-        var out: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data {
-            return SymmetricKey(data: data)
-        }
+        if let existing = readKey() { return existing }
+
         let fresh = SymmetricKey(size: .bits256)
         let data = fresh.withUnsafeBytes { Data($0) }
         let add: [String: Any] = [
@@ -121,7 +114,25 @@ final class ExtensionStorage {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        SecItemAdd(add as CFDictionary, nil)
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // A concurrent instance won the race — use the stored key so both
+            // instances agree (otherwise loadLocal() would silently AES-fail and
+            // reset storage.local).
+            if let raced = readKey() { return raced }
+        }
         return fresh
+    }
+
+    private static func readKey() -> SymmetricKey? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainAccount,
+            kSecReturnData as String: true,
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data else { return nil }
+        return SymmetricKey(data: data)
     }
 }
