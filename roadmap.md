@@ -307,3 +307,7 @@ E1 (Foundations / FR-25 gate)
 > **"Approve"** — recorded 2026-07-11 21:14 EDT (approved together with `prd.md` §13; no amendments).
 
 Status: **APPROVED.** Milestones M0–M3 and epics E1–E12 are the plan of record.
+
+### Milestone exit verdicts
+
+- **M0 Foundations — EXITED.** Verdict: **"Approve M0 exit"** — Calvin Ference, 2026-07-11 23:35 EDT. Evidence: PRD/roadmap/architecture gates recorded; `e1-foundations` change complete (PR #4, merge `6365a97`) — clean-checkout build + gated launch verified, FR-25 artifact `research/regrep/2026-07-11.md` triaged (gate SATISFIED), Pass bundle v1.38.0 vendored per ADR-001. E2/E3 are startable; E1's FR-25/FR-26 duties continue operationally.
