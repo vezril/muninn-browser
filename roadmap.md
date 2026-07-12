@@ -1,8 +1,8 @@
 # Muninn — Roadmap & Epic Breakdown
 
-**Version:** 0.1 DRAFT
+**Version:** 0.1
 **Date:** 2026-07-11
-**Status:** Derived from `prd.md` v0.1 DRAFT — inherits its pending HUMAN GATE. Not independently approved; Calvin's PRD approval and this roadmap's approval are intended to land together or in immediate sequence (see §6).
+**Status:** **APPROVED** — Calvin Ference, 2026-07-11 21:14 EDT (§6), together with `prd.md` v0.1.
 **Provenance:** Built directly from `prd.md` (post-checker-review revision — all FR/NFR/SM/OQ IDs resolve, MVP cutline = exact P0 set per §9). Consulted for context only, not re-litigated: `product-brief.md`, `decisions.md` (D1–D4 locked), `research/spike-b-proton-pass-api-inventory.md` (Tier 1/2/3 breakdown, 4–8 weekend skeleton estimate), `CLAUDE.md` ground rules. No requirement in this document is invented — every epic traces to an existing `FR-`/`NFR-`/`SM-`/`OQ-` ID. Gaps in PRD coverage are flagged in §5, not silently filled.
 
 **Scope of this document:** roadmap + epic breakdown only. Story files, Given/When/Then acceptance criteria, and OpenSpec delta specs are written later, in Solutioning, per-epic, after the architecture (with its ADRs) exists. Each epic below is written to be story-ready — precise enough that a story-planner can decompose it without re-reading the full PRD.
@@ -304,6 +304,6 @@ E1 (Foundations / FR-25 gate)
 
 **HUMAN GATE — Calvin Ference**
 
-> *(verbatim verdict and timestamp to be recorded here upon review — intended to be approved alongside or immediately after `prd.md` §13, since this roadmap is derived from and inherits that gate)*
+> **"Approve"** — recorded 2026-07-11 21:14 EDT (approved together with `prd.md` §13; no amendments).
 
-Status: **Awaiting approval.**
+Status: **APPROVED.** Milestones M0–M3 and epics E1–E12 are the plan of record.
