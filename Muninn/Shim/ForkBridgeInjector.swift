@@ -25,7 +25,10 @@ final class ForkBridgeInjector: NSObject {
         var e: [String: Any] = ["kind": kind]; e.merge(info) { a, _ in a }; events.append(e)
     }
 
-    init(broker: MessageBroker) {
+    /// - Parameter injectContentScripts: inject the vendored orchestrator.js /
+    ///   webauthn.js (default true). Unit tests of the bus/isolation pass false to
+    ///   exercise the shim without orchestrator's page-side behavior.
+    init(broker: MessageBroker, injectContentScripts: Bool = true) {
         self.broker = broker
         self.isolatedWorld = WKContentWorld.world(name: Self.isolatedWorldName)
         super.init()
@@ -33,13 +36,34 @@ final class ForkBridgeInjector: NSObject {
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(ExtensionSchemeHandler(), forURLScheme: PassBundle.scheme)
 
-        // Content shim → isolated world only, at document start, MAIN FRAME only
-        // (the fork bridge is a main-frame concern; keeps the broker-reachable
-        // surface off cross-origin subframes — isolation holds either way).
-        if let shim = Self.resource("content-shim", "js") {
-            let us = WKUserScript(source: shim, injectionTime: .atDocumentStart,
-                                  forMainFrameOnly: true, in: isolatedWorld)
-            config.userContentController.addUserScript(us)
+        // E5 general injection (FR-9), per the vendored manifest:
+        //  isolated world, document_start: bootstrap (id+manifest) → content-polyfill
+        //  isolated world, document_end, all frames: orchestrator.js
+        //  MAIN world, document_start, all frames: webauthn.js (Proton's own; no browser.*)
+        let ucc = config.userContentController
+        func addUserScript(_ src: String, at time: WKUserScriptInjectionTime, world: WKContentWorld, allFrames: Bool) {
+            ucc.addUserScript(WKUserScript(source: src, injectionTime: time, forMainFrameOnly: !allFrames, in: world))
+        }
+        // Bootstrap: expose id + manifest to the isolated world before the polyfill.
+        if let manifestData = try? JSONSerialization.data(withJSONObject: PassBundle.manifest),
+           let manifestJSON = String(data: manifestData, encoding: .utf8) {
+            let boot = "globalThis.__MUNINN = { id: \"\(PassBundle.canonicalID)\", manifest: \(manifestJSON) };"
+            addUserScript(boot, at: .atDocumentStart, world: isolatedWorld, allFrames: true)
+        }
+        if let poly = Self.resource("content-polyfill", "js") {
+            addUserScript(poly, at: .atDocumentStart, world: isolatedWorld, allFrames: true)
+        }
+        if injectContentScripts {
+            // orchestrator.js — the general content script (all http(s) pages).
+            if let root = PassBundle.rootURL,
+               let orch = try? String(contentsOf: root.appendingPathComponent("orchestrator.js"), encoding: .utf8) {
+                addUserScript(orch, at: .atDocumentEnd, world: isolatedWorld, allFrames: true)
+            }
+            // webauthn.js — MAIN world (Proton's own script; must reference no browser.*).
+            if let root = PassBundle.rootURL,
+               let wa = try? String(contentsOf: root.appendingPathComponent("webauthn.js"), encoding: .utf8) {
+                addUserScript(wa, at: .atDocumentStart, world: .page, allFrames: true)
+            }
         }
 
         // Broker handler registered ONLY for the isolated world — the page MAIN
@@ -143,11 +167,22 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
     func userContentController(_ ucc: WKUserContentController,
                               didReceive message: WKScriptMessage) async -> (Any?, String?) {
         guard let injector, let env = message.body as? [String: Any] else { return (nil, "bad envelope") }
+        let ns = env["ns"] as? String
+        let args = env["args"] as? [Any] ?? []
+        // Control channels from content-polyfill.
+        if ns == "__audit", let d = args.first as? [String: Any] {
+            injector.broker.record(ns: (d["ns"] as? String) ?? "?", member: (d["member"] as? String) ?? "?",
+                                   kind: (d["kind"] as? String) ?? "call", extra: ["stack": d["stack"] ?? ""])
+            return (NSNull(), nil)
+        }
+        if ns == "__respond", let id = args.first as? String { // page-side sendResponse
+            injector.broker.resolveResponse(id: id, result: args.count > 1 ? args[1] : nil)
+            return (NSNull(), nil)
+        }
         // Page-origin runtime.sendMessage → cross-context bus (delivered to the
         // host worker's onMessage; the return is background.js's sendResponse).
-        if (env["ns"] as? String) == "runtime", (env["method"] as? String) == "sendMessage" {
-            let msg = (env["args"] as? [Any])?.first
-            let result = await injector.broker.routeSendMessageToHost(msg, senderURL: injector.webView?.url?.absoluteString)
+        if ns == "runtime", (env["method"] as? String) == "sendMessage" {
+            let result = await injector.broker.routeSendMessageToHost(args.first, senderURL: injector.webView?.url?.absoluteString)
             return (result, nil)
         }
         // Everything else is a synchronous self-service Tier-1 call.

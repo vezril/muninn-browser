@@ -20,9 +20,10 @@ final class E6MessageBusTests: XCTestCase {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
         let broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
         let host = BackgroundHost(broker: broker)
-        let page = ForkBridgeInjector(broker: broker)
+        let page = ForkBridgeInjector(broker: broker, injectContentScripts: false) // pure bus, no orchestrator
         defer { page.stop(); host.stop() }
 
+        host.firesLifecycleOnBoot = false // isolate to the pure bus; no onboarding listeners
         host.start()
         await waitFor("host boot", timeout: 25) { host.bootSucceeded }
 

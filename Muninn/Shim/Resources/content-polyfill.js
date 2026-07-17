@@ -1,0 +1,131 @@
+// content-polyfill.js — the shim's full browser.* surface for the page ISOLATED
+// world (never MAIN). Proxy catch-all so Proton's orchestrator.js/fork.js boot
+// without throwing on unmodelled access (content-side S1); unmodelled access is
+// audited and returns a rejecting call. Transport is
+// webkit.messageHandlers.brokerIsolated (calls) + __muninnContentPush (inbound).
+//
+// Injected at document_start in the isolated world, AFTER a bootstrap user
+// script sets globalThis.__MUNINN = { id, manifest }.
+(function () {
+  "use strict";
+  var g = (typeof globalThis !== "undefined") ? globalThis : this;
+  var BOOT = g.__MUNINN || {};
+  var CANONICAL_ID = BOOT.id || "ghmbeldphafepmbegfdlkpapadhbakde";
+  var MANIFEST = BOOT.manifest || {};
+  var mh = (g.webkit && g.webkit.messageHandlers) || {};
+  var broker = mh.brokerIsolated;
+  var listeners = Object.create(null); // "ns.event" -> [fn]
+
+  function callNative(ns, method, args) {
+    if (!broker) return Promise.reject(new Error("no isolated broker"));
+    return broker.postMessage({ ns: ns, method: method, args: args });
+  }
+  function audit(ns, member, kind) {
+    if (broker) broker.postMessage({ ns: "__audit", method: "record",
+      args: [{ ns: ns, member: member, kind: kind, stack: (new Error()).stack }] });
+  }
+
+  function dual(ns, method) {
+    return function () {
+      var args = Array.prototype.slice.call(arguments);
+      var cb = (typeof args[args.length - 1] === "function") ? args.pop() : null;
+      var p = callNative(ns, method, args);
+      if (cb) { p.then(function (r) { cb(r); }, function () { cb(undefined); }); return; }
+      return p;
+    };
+  }
+  function eventHub(key) {
+    return {
+      addListener: function (f) { (listeners[key] || (listeners[key] = [])).push(f); },
+      removeListener: function (f) { var l = listeners[key]; if (!l) return; var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); },
+      hasListener: function (f) { return (listeners[key] || []).indexOf(f) >= 0; },
+    };
+  }
+
+  var EVENTS = {
+    runtime: ["onMessage", "onMessageExternal", "onConnect", "onInstalled", "onStartup"],
+    storage: ["onChanged"],
+    tabs: ["onUpdated", "onRemoved", "onActivated"],
+  };
+  var SYNC_RUNTIME = {
+    getURL: function (p) { var s = String(p || ""); if (s.charAt(0) === "/") s = s.slice(1); return "muninn-ext://" + CANONICAL_ID + "/" + s; },
+    getManifest: function () { return MANIFEST; },
+    getFrameId: function () { return 0; }, // native resolves the real id; 0 = main default
+  };
+
+  function makeNamespace(ns) {
+    var base = Object.create(null);
+    (EVENTS[ns] || []).forEach(function (ev) { base[ev] = eventHub(ns + "." + ev); });
+    if (ns === "storage") {
+      ["local", "session", "managed"].forEach(function (area) {
+        base[area] = { get: dual("storage", area + ".get"), set: dual("storage", area + ".set"),
+                       remove: dual("storage", area + ".remove"), clear: dual("storage", area + ".clear"),
+                       getBytesInUse: dual("storage", area + ".getBytesInUse") };
+      });
+      base.sync = base.local;
+    }
+    if (ns === "runtime") {
+      base.getURL = SYNC_RUNTIME.getURL; base.getManifest = SYNC_RUNTIME.getManifest;
+      base.getFrameId = SYNC_RUNTIME.getFrameId; base.lastError = null;
+      Object.defineProperty(base, "id", { get: function () { return CANONICAL_ID; }, enumerable: true });
+      base.connect = function () {
+        var disc = [];
+        var port = { name: "", onMessage: eventHub("runtime.__deadPortMsg"),
+          onDisconnect: { addListener: function (f) { disc.push(f); }, removeListener: function () {} },
+          postMessage: function () {}, disconnect: function () { disc.forEach(function (f) { try { f(port); } catch (_) {} }); } };
+        return port; // synchronous inert Port (E5 audit decides if real ports are needed)
+      };
+    }
+    return new Proxy(base, {
+      get: function (target, prop) {
+        if (prop in target) return target[prop];
+        if (typeof prop === "symbol" || prop === "then") return undefined;
+        // Route any non-locally-modelled method to native (which handles known
+        // ones — sendMessage, tabs.*, etc. — and throws for truly-unknown). Audit
+        // for visibility; native throwing surfaces as a rejection, not a crash.
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          var cb = (typeof args[args.length - 1] === "function") ? args.pop() : null;
+          audit(ns, String(prop), "call");
+          var p = callNative(ns, String(prop), args);
+          if (cb) { p.then(function (r) { cb(r); }, function () { cb(undefined); }); return; }
+          return p;
+        };
+      },
+    });
+  }
+
+  var KNOWN = ["runtime", "storage", "alarms", "tabs", "action", "windows", "permissions",
+               "scripting", "webNavigation", "i18n", "extension", "commands", "contextMenus", "notifications", "idle", "app"];
+  var api = new Proxy(Object.create(null), {
+    get: function (target, prop) {
+      if (typeof prop === "symbol" || prop === "then") return undefined;
+      if (!(prop in target)) {
+        if (KNOWN.indexOf(String(prop)) < 0) audit("<root>", String(prop), "namespace");
+        target[prop] = makeNamespace(String(prop));
+      }
+      return target[prop];
+    },
+  });
+
+  // Inbound native → content (events, onMessage delivery).
+  g.__muninnContentPush = function (env) {
+    if (!env || !env.key) return;
+    var l = listeners[env.key] || [];
+    var a = env.args || [];
+    if (env.key === "runtime.onMessage" || env.key === "runtime.onMessageExternal") {
+      var responded = false;
+      function sendResponse(r) { if (responded) return; responded = true;
+        if (env.respId && broker) broker.postMessage({ ns: "__respond", method: "resolve", args: [env.respId, r === undefined ? null : r] }); }
+      var wantsAsync = false;
+      for (var i = 0; i < l.length; i++) { try { if (l[i](a[0], a[1], sendResponse) === true) wantsAsync = true; } catch (_) {} }
+      if (!wantsAsync && !responded && env.respId && broker) broker.postMessage({ ns: "__respond", method: "resolve", args: [env.respId, null] });
+    } else {
+      for (var j = 0; j < l.length; j++) { try { l[j].apply(null, a); } catch (_) {} }
+    }
+  };
+
+  // Install ONLY in this isolated world's global (never MAIN).
+  g.chrome = api;
+  g.browser = api;
+})();
