@@ -23,6 +23,6 @@
 
 ## 4. Review & ship
 
-- [ ] 4.1 XCTest suite covers §1 (no-window, process isolation) and §3 (isolation, scoping, fallback, relay); full suite green from a pristine clone
+- [x] 4.1 Pristine clone: `xcodebuild test` → all 22 tests green (TEST SUCCEEDED). Self-contained.
 - [x] 4.2 Refute-oriented review — verdict MINOR-FIXES; **MAIN-world isolation confirmed airtight, tests non-vacuous.** Fixed: `matchesForkHost` exact-host + case-fold (was over-matching subdomains; test flipped), distinct `forkFailed` audit kind, content-shim main-frame-only, `ForkBridgeInjector.stop()`. Finding 2 (inbound native→content push unwired) documented as an E6/E5 carry in the S2 artifact (login uses postMessage fallback, not onMessageExternal, so out of S2 scope).
-- [ ] 4.3 Ship via git-ship (PR-gated); update `CLAUDE.md` (E3-hardening + S2 done → E6 unblocked). Any run that would reach a login form stops for the E6 human gate (ground rule 1)
+- [x] 4.3 Shipped — PR opened (`feat/e3-hardening-s2`); `CLAUDE.md` advanced to E6-next with both E6 carries recorded. Merge gated on Calvin (`/merge`).
