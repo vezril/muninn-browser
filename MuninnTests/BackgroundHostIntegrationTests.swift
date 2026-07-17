@@ -49,6 +49,7 @@ final class BackgroundHostIntegrationTests: XCTestCase {
 
     func testBackgroundJsBootsClean() async throws {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
+        host.firesLifecycleOnBoot = false // measure pure module load, not the onboarding flow
         host.start()
         await waitFor("backgroundLoaded", timeout: 25) { self.host.bootSucceeded }
         // Settle for late errors/rejections.

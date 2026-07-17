@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var window: NSWindow?
+    private var shell: AppShell?
     private let aboutPanel = AboutPanelController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -21,18 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         buildMenu()
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Muninn"
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        self.window = window
-
-        NSApp.activate(ignoringOtherApps: true)
+        let shell = AppShell()
+        self.shell = shell
+        shell.present()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

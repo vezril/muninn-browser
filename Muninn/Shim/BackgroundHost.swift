@@ -14,6 +14,14 @@ final class BackgroundHost: NSObject {
     private var restarts: [Date] = []
     private var stopped = false
 
+    /// Whether the extension install lifecycle event has been fired this run.
+    var hasFiredInstalled = false
+
+    /// Fire runtime.onInstalled/onStartup on boot (drives the onboarding/fork
+    /// flow). The pure S1 boot-clean test sets this false to measure module load
+    /// in isolation; the app leaves it true.
+    var firesLifecycleOnBoot = true
+
     /// Lifecycle/boot observations for the S1 audit (console lines, worker
     /// errors, host events). Each is a [String: Any] with a "kind".
     private(set) var bootLog: [[String: Any]] = []
@@ -39,7 +47,7 @@ final class BackgroundHost: NSObject {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
         self.webView = webView
-        broker.eventTarget = webView
+        broker.registerContext("host", webView: webView, world: nil)
 
         // Keep the host resident: hold ONE process activity assertion for the
         // host's lifetime (ADR-005; process-granular, minimum-necessary under
@@ -60,7 +68,7 @@ final class BackgroundHost: NSObject {
         stopped = true
         webView?.stopLoading()
         webView = nil
-        broker.eventTarget = nil
+        broker.unregisterContext("host")
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
     }
 
@@ -159,6 +167,10 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
             var sinfo: [String: Any] = ["name": d["name"] ?? "?", "ok": d["ok"] ?? false]
             if let v = d["value"] { sinfo["value"] = v }
             host.note(kind: "scenario", info: sinfo)
+        case "response":
+            // A worker onMessage listener's sendResponse — resolve the parked
+            // cross-context continuation (E6 message bus).
+            if let id = d["id"] as? String { host.broker.resolveResponse(id: id, result: d["result"]) }
         case "workerError", "workerRejection":
             host.note(kind: kind, info: d)
         case "audit":
@@ -168,7 +180,15 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
                                    extra: ["stack": d["stack"] ?? ""])
             }
         case "hostEvent":
-            host.note(kind: "host:" + ((d["event"] as? String) ?? "?"), info: d)
+            let event = (d["event"] as? String) ?? "?"
+            host.note(kind: "host:" + event, info: d)
+            if event == "backgroundLoaded" && host.firesLifecycleOnBoot {
+                // Fire the extension lifecycle event so background.js runs its
+                // install/onboarding hook (which drives the auth-fork URL). A real
+                // browser fires runtime.onInstalled once on install / onStartup after.
+                host.broker.fireExtensionLifecycle(firstRun: !host.hasFiredInstalled)
+                host.hasFiredInstalled = true
+            }
         default:
             host.note(kind: "audit", info: d)
         }

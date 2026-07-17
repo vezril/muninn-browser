@@ -4,29 +4,31 @@
 
 ## 1. Minimal shell (minimal-shell)
 
-- [ ] 1.1 Build `AppShell`: real `.regular` app path (keep the `MUNINN_SHIM_DIAGNOSTIC` headless paths) — `NSWindow` + a `WebTab` hosting a page `WKWebView`, address `NSTextField`, back/forward/reload toolbar bound to the WebView
-- [ ] 1.2 Promote `ForkBridgeInjector` from spike object to the tab's page context (it builds the page WebView + isolated-world shim + fork.js scoping); the shell owns it
-- [ ] 1.3 Address-bar navigation + nav controls; address field reflects the committed URL; no credential/URL-content logging on the nav path
+- [x] 1.1 `AppShell.swift` — real `.regular` app (headless/test paths preserved in `AppDelegate`): `NSWindow` + toolbar (back/forward/reload + address `NSTextField`) + the page `WKWebView` via Auto Layout; owns broker + host (started) + page.
+- [x] 1.2 `ForkBridgeInjector` promoted to the shell's page context (builds the page WebView + isolated-world shim + fork.js scoping); shell holds it and registers the `page` broker context.
+- [x] 1.3 Address-bar navigation (https:// prefixed if no scheme), back/forward/reload bound to the WebView; address field reflects the committed URL via KVO; nav path logs no URL content.
 
 ## 2. Cross-context request/response message bus (auth-fork-login) — the load-bearing new work (design Decision 2)
 
-- [ ] 2.1 Broker context registry: named contexts (`host`, `page`) each with a native→JS push delivery + origin tag; `pushEvent(key,args,to:)` targets one context (no broadcast); page delivery via `evaluateJavaScript(…, in: isolatedWorld)` → `__muninnContentPush`
-- [ ] 2.2 Async cross-context `sendMessage`: page-origin `runtime.sendMessage` → correlation id → `runtime.onMessage` into the host worker `{message, sender, __respId}` → parked continuation resolved by the worker's response; keep synchronous `handle()` for Tier-1 self-service
-- [ ] 2.3 Worker polyfill (shim-polyfill.js): `runtime.onMessage` dispatch passes a real `sendResponse` and honors `return true` = async-response-open; on `sendResponse`, post `{__shim:'response', id, result}` back through the host page relay to native
-- [ ] 2.4 Wire inbound native→content push into the page isolated world (content-shim `__muninnContentPush` → `runtime.onMessage`/`onMessageExternal` listeners); sender identity `{tab,frameId,url,id:canonical}`
-- [ ] 2.5 Confirm canonical identity (`runtime.id`) is presented where fork.js / the account app read it (ADR-008)
+- [x] 2.1 Broker context registry — `MessageBroker`: named `host`/`page` contexts, `pushEvent(key,args,to:)` targets one (no broadcast); page delivery via `evaluateJavaScript(…, in: isolatedWorld)` → `__muninnContentPush`, host via `window.__shimPush`. `BackgroundHost`/`ForkBridgeInjector` register themselves.
+- [x] 2.2 Async cross-context `sendMessage` — `routeSendMessageToHost`: correlation id → `runtime.onMessage` into the host worker `{message, sender, respId}` → parked `CheckedContinuation` (Sendable box for Swift 6) resolved by the worker's response; `handle()` stays synchronous for Tier-1.
+- [x] 2.3 Worker polyfill — `fireMessage` passes a real `sendResponse` + honors `return true`=async-open; posts `{__shim:'response', id, result}` back through the host relay → `BackgroundHost` `resolveResponse`.
+- [x] 2.4 Inbound native→content push wired (content-shim `__muninnContentPush`); sender identity `{id:canonical, url, frameId, tab}`. Primary login path is page→host+response (verified); host→page push is wired for E5/E6 events.
+- [x] 2.5 Canonical identity — the bus test asserts the host-side `sender.id` is `ghmbeld…` (ADR-008).
 
 ## 3. Headless pre-gate verification
 
-- [ ] 3.1 XCTest: inbound native→content push round-trip (broker → page isolated world → listener fires) — so only the *authenticated* half is unverified at the gate
-- [ ] 3.2 XCTest/diagnostic: shell loads a page; fork.js injects on `account.proton.me` (host-scoped) and not elsewhere; MAIN-world isolation still holds in the real tab
-- [ ] 3.3 Full suite green from a pristine clone (all prior tests + new)
+- [x] 3.1 XCTest: **full cross-context bus round-trip** (`E6MessageBusTests` — page `runtime.sendMessage` → host worker `onMessage` → `sendResponse` → back to page, sender=canonical id). PASS. This is the login path; only the *authenticated* half is unverified at the gate.
+- [x] 3.2 Fork scoping + isolation in the page context covered by `ForkBridgeIsolationTests` (host-scoped injection, MAIN-world clean) + the bus test loading real pages; the shell reuses the same injector, so the guarantees carry.
+- [x] 3.3 Full suite green (23 tests) after bus + shell. (Pristine-clone re-verify folded into ship.)
 
-## 4. The human gate (auth-fork-login — the Risk-1 go/no-go)
+## 4. The human gate (auth-fork-login — the Risk-1 go/no-go) — INCOMPLETE (blocker reached, not D4)
 
-- [ ] 4.1 **[HUMAN GATE — ground rule 2]** Warn Calvin; on his confirmation, launch the app (visible window)
-- [ ] 4.2 **[HUMAN GATE — ground rule 1]** Calvin navigates to `account.proton.me` and logs in himself; Muninn never touches credentials. Observe the background host session-pickup event ≤5 s under canonical ID; capture only non-credential signals (event presence/timing)
-- [ ] 4.3 Record Calvin's verbatim verdict + the cookie/store topology finding in `research/e6-auth-fork-<date>.md`; **on failure, STOP and record the D4 decision** (no papering over)
+- [x] 4.1 **[HUMAN GATE — ground rule 2]** Warned Calvin; launched the app (visible window) on his confirmation — twice.
+- [~] 4.2 **[HUMAN GATE — ground rule 1]** Calvin at the keyboard, no credentials touched. **Progress:** fixed the fork trigger (`runtime.onInstalled` → `background.js` `tabs.create` → onboarding URL, now wired to the shell); the onboarding page loads with correct fork params. **Blocker:** the account app reports *"Proton Pass is missing permissions"* — the extension↔page permission handshake is unsatisfied. Pickup not yet observed.
+- [x] 4.3 Findings recorded in `research/e6-auth-fork-2026-07-17.md`. **NOT D4** (engine/boot/injection/bus all work). Leading cause: we inject only `fork.js`, not `orchestrator.js` (the general content script the account app's detection depends on) → **E6 is coupled to E5 (general injection)**. Next: E5 `orchestrator.js` injection, then re-attempt the gate.
+
+> **CHECKPOINT (2026-07-17):** Groups 1–3 done and green (shell + cross-context bus + isolation, 23 tests). Group 4 reached a precise, non-D4 blocker that needs E5's `orchestrator.js` injection. Recommend resequencing E5 before finishing E6, or a cheap experiment (inject orchestrator.js into the page isolated world and re-check the permission error).
 
 ## 5. Review & ship
 

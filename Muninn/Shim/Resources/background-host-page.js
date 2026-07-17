@@ -42,6 +42,8 @@
             function (err) { worker.postMessage({ __shim: "reply", id: d.id, error: String(err && err.message || err) }); }
           );
           break;
+        case "response":
+          // worker onMessage listener's sendResponse -> native broker continuation
         case "console":
         case "workerError":
         case "workerRejection":

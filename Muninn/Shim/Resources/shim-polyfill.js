@@ -71,6 +71,25 @@
     }
   }
 
+  // runtime.onMessage delivery with Chrome's sendResponse contract: a listener
+  // returning `true` keeps the channel open for an async sendResponse; the
+  // response is correlated back to native via respId (E6 cross-context bus).
+  function fireMessage(key, message, sender, respId) {
+    var l = listeners[key] || [];
+    var responded = false;
+    function sendResponse(resp) {
+      if (responded) return; responded = true;
+      if (respId) self.postMessage({ __shim: "response", id: respId, result: resp === undefined ? null : resp });
+    }
+    var wantsAsync = false;
+    for (var i = 0; i < l.length; i++) {
+      try { if (l[i](message, sender, sendResponse) === true) wantsAsync = true; }
+      catch (e) { /* listener errors are the extension's */ }
+    }
+    // No async responder and nobody answered synchronously → close the channel.
+    if (!wantsAsync && !responded && respId) sendResponse(null);
+  }
+
   // --- synchronous members implemented locally -----------------------------
   var SYNC = {
     "runtime.getURL": function (path) {
@@ -201,8 +220,13 @@
       var p = pending[d.id]; if (!p) return; delete pending[d.id];
       if (d.error) p.reject(new Error(d.error)); else p.resolve(d.result);
     } else if (d.__shim === "push") {
-      // native-originated event: { key, args }
-      fireEvent(d.key, d.args || []);
+      // native-originated event: { key, args, respId? }
+      if (d.key === "runtime.onMessage" || d.key === "runtime.onMessageExternal") {
+        var a = d.args || [];
+        fireMessage(d.key, a[0], a[1], d.respId);
+      } else {
+        fireEvent(d.key, d.args || []);
+      }
     } else if (d.__shim === "portMessage") {
       var pt = ports[d.portId]; if (pt) pt.onMessage.forEach(function (f) { try { f(d.message, pt.stub); } catch (_) {} });
     } else if (d.__shim === "portDisconnect") {

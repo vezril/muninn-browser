@@ -46,6 +46,13 @@ enum ShimDiagnostic {
                 print("  [\(kind)] \(compact(entry))")
             }
         }
+        // Surface what background.js tries to open (tabs.create/update / windows.create)
+        // — the auth-fork is background-driven (E6 finding). Host+path only.
+        broker.onAudit = { entry in
+            if (entry["kind"] as? String) == "open-url" {
+                print("  [OPEN-URL] \(entry["member"] ?? "?") -> \(entry["url"] ?? "?")")
+            }
+        }
 
         print("S1 boot — Pass v\(PassBundle.version), settling \(Int(settle))s…")
         host.start()
