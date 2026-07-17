@@ -51,12 +51,16 @@ final class ForkBridgeInjector: NSObject {
 
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
+        // Register as the "page" push context so the broker can deliver events
+        // (and future onMessage) into this isolated world.
+        broker.registerContext("page", webView: webView, world: isolatedWorld)
     }
 
     func load(_ url: URL) { webView.load(URLRequest(url: url)) }
 
     /// Lifecycle symmetry with BackgroundHost (this owns a live networking WKWebView).
     func stop() {
+        broker.unregisterContext("page")
         webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView?.configuration.userContentController.removeAllScriptMessageHandlers()
@@ -139,6 +143,14 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
     func userContentController(_ ucc: WKUserContentController,
                               didReceive message: WKScriptMessage) async -> (Any?, String?) {
         guard let injector, let env = message.body as? [String: Any] else { return (nil, "bad envelope") }
+        // Page-origin runtime.sendMessage → cross-context bus (delivered to the
+        // host worker's onMessage; the return is background.js's sendResponse).
+        if (env["ns"] as? String) == "runtime", (env["method"] as? String) == "sendMessage" {
+            let msg = (env["args"] as? [Any])?.first
+            let result = await injector.broker.routeSendMessageToHost(msg, senderURL: injector.webView?.url?.absoluteString)
+            return (result, nil)
+        }
+        // Everything else is a synchronous self-service Tier-1 call.
         do { return (try injector.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
     }

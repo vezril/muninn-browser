@@ -20,8 +20,20 @@ final class MessageBroker: NSObject {
     private(set) var auditLog: [[String: Any]] = []
     var onAudit: (([String: Any]) -> Void)?
 
-    /// The host page we push events into (set by BackgroundHost once loaded).
-    weak var eventTarget: WKWebView?
+    /// Named push contexts (ADR-007 / E6 message bus). `host` = the background
+    /// Worker (reached via its page's MAIN-world `window.__shimPush` → worker);
+    /// `page` = a tab's isolated content world (reached via
+    /// `evaluateJavaScript(…, in: world)` → content-shim `__muninnContentPush`).
+    private struct PushContext { weak var webView: WKWebView?; let world: WKContentWorld? }
+    private var contexts: [String: PushContext] = [:]
+
+    /// Boxes a JS-value response so the continuation type is Sendable; every
+    /// access is main-actor-confined, so unchecked is sound.
+    private struct AnyBox: @unchecked Sendable { let value: Any? }
+
+    /// Parked continuations for cross-context request/response (correlation id → cont).
+    private var pending: [String: CheckedContinuation<AnyBox, Never>] = [:]
+    private var respSeq = 0
 
     /// Badge state recorded for the future toolbar (no toolbar yet).
     private(set) var badgeText: String = ""
@@ -32,9 +44,16 @@ final class MessageBroker: NSObject {
         alarms.onFire = { [weak self] alarm in
             self?.pushEvent(key: "alarms.onAlarm", args: [[
                 "name": alarm.name, "scheduledTime": alarm.scheduledTime,
-            ]])
+            ]], to: "host")
         }
     }
+
+    // MARK: - context registry
+
+    func registerContext(_ name: String, webView: WKWebView, world: WKContentWorld?) {
+        contexts[name] = PushContext(webView: webView, world: world)
+    }
+    func unregisterContext(_ name: String) { contexts[name] = nil }
 
     // MARK: - dispatch
 
@@ -53,10 +72,11 @@ final class MessageBroker: NSObject {
         case "alarms": return alarmsCall(method, args)
         case "runtime": return try runtimeCall(method, args)
         case "tabs": return tabsCall(method, args)
+        case "windows": return windowsCall(method, args)
         case "action": return actionCall(method, args)
         case "clipboardWrite": return clipboardCall(args)
-        case "windows", "permissions", "scripting", "webNavigation":
-            // Truthful-minimum stubs; real behavior arrives with E5/E6/E9.
+        case "permissions", "scripting", "webNavigation":
+            // Truthful-minimum stubs; real behavior arrives with E5/E9.
             return stubbed(ns: ns, method: method)
         default:
             record(ns: ns, member: method, kind: "unhandled-namespace")
@@ -122,8 +142,9 @@ final class MessageBroker: NSObject {
     private func runtimeCall(_ method: String, _ args: [Any]) throws -> Any? {
         switch method {
         case "sendMessage":
-            // No peer contexts yet (background host is alone until E6).
-            // Resolve to undefined so senders don't hang; onMessage has no listeners elsewhere.
+            // A self-service sendMessage from the host worker with no other peer
+            // resolves to undefined. Page-origin sendMessage is routed through the
+            // ASYNC cross-context path (routeSendMessageToHost), not here.
             return NSNull()
         case "getPlatformInfo": return ["os": "mac", "arch": "arm64"]
         case "getBrowserInfo": return ["name": "Muninn", "version": "0.1.0"]
@@ -144,14 +165,41 @@ final class MessageBroker: NSObject {
         }
     }
 
+    /// Set by the shell — navigates its one tab when the extension opens a URL
+    /// (the auth-fork is background-driven via tabs.create/update, E6 finding).
+    var onOpenURL: ((URL, _ active: Bool) -> Void)?
+
     private func tabsCall(_ method: String, _ args: [Any]) -> Any? {
         switch method {
-        case "query": return [] as [Any]          // no tabs exist yet
-        case "getCurrent": return NSNull()
-        case "create", "update", "get": return ["id": -1]
+        case "query": return [] as [Any]          // single-tab shell (E9 adds the model)
+        case "getCurrent", "get": return ["id": 1, "active": true]
+        case "create", "update":
+            if let d = args.first as? [String: Any], let urlStr = d["url"] as? String {
+                openURL(urlStr, member: method)
+            } else if args.count > 1, let d = args[1] as? [String: Any], let urlStr = d["url"] as? String {
+                openURL(urlStr, member: method) // tabs.update(tabId, {url})
+            }
+            return ["id": 1, "active": true]
         case "remove", "reload", "sendMessage": return NSNull()
         default: record(ns: "tabs", member: method, kind: "call"); return NSNull()
         }
+    }
+
+    private func windowsCall(_ method: String, _ args: [Any]) -> Any? {
+        if method == "create", let d = args.first as? [String: Any] {
+            if let urlStr = d["url"] as? String { openURL(urlStr, member: "windows.create") }
+            else if let urls = d["url"] as? [String], let first = urls.first { openURL(first, member: "windows.create") }
+        }
+        return ["id": 1]
+    }
+
+    /// Drive the shell's tab. Records only host+path (never the query string,
+    /// which carries the one-time fork `state` nonce) — ground rule 1.
+    private func openURL(_ urlStr: String, member: String) {
+        guard let url = URL(string: urlStr) else { return }
+        let label = (url.host ?? "?") + url.path
+        record(ns: "tabs", member: member, kind: "open-url", extra: ["url": label])
+        onOpenURL?(url, true)
     }
 
     private func actionCall(_ method: String, _ args: [Any]) -> Any? {
@@ -181,15 +229,76 @@ final class MessageBroker: NSObject {
 
     private func fireStorageChanged(area: String, changes: [String: Any]) {
         guard !changes.isEmpty else { return }
-        pushEvent(key: "storage.onChanged", args: [changes, area])
+        pushEvent(key: "storage.onChanged", args: [changes, area], to: "host")
     }
 
-    func pushEvent(key: String, args: [Any]) {
-        guard let webView = eventTarget else { return }
-        let env: [String: Any] = ["__shim": "push", "key": key, "args": args]
-        guard let data = try? JSONSerialization.data(withJSONObject: env),
+    // MARK: - cross-context request/response bus (E6, design Decision 2)
+
+    /// Page-origin `runtime.sendMessage` → deliver to the host worker's
+    /// `onMessage` listeners (background.js) and await `sendResponse`. This
+    /// delivery is the auth-fork login pickup.
+    /// E6 human-gate observation only: a **payload-free** signal that a page→host
+    /// relay/response occurred (ground rule 1 — never carries message content or
+    /// tokens, only direction + sender host + timing). Set solely in the gate run.
+    var onCrossContextRelay: ((_ direction: String, _ senderHost: String) -> Void)?
+
+    func routeSendMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
+        guard contexts["host"] != nil else { return NSNull() }
+        let senderHost = senderURL.flatMap { URL(string: $0)?.host } ?? "?"
+        onCrossContextRelay?("relay-in", senderHost)
+        respSeq += 1
+        let id = "resp\(respSeq)"
+        let sender: [String: Any] = [
+            "id": PassBundle.canonicalID, "url": senderURL ?? "",
+            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
+        ]
+        let env: [String: Any] = [
+            "__shim": "push", "key": "runtime.onMessage",
+            "args": [message ?? NSNull(), sender], "respId": id,
+        ]
+        let box = await withCheckedContinuation { (cont: CheckedContinuation<AnyBox, Never>) in
+            pending[id] = cont
+            deliver(env, to: "host")
+            // Safety valve: if the worker never responds, resolve undefined.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                if let c = self?.pending.removeValue(forKey: id) { c.resume(returning: AnyBox(value: NSNull())) }
+            }
+        }
+        onCrossContextRelay?("response-out", senderHost) // background.js handled it
+        return box.value
+    }
+
+    /// Called when a worker's `sendResponse` comes back through the host relay.
+    func resolveResponse(id: String, result: Any?) {
+        if let cont = pending.removeValue(forKey: id) { cont.resume(returning: AnyBox(value: result ?? NSNull())) }
+    }
+
+    /// Fire the extension lifecycle event so background.js runs its install /
+    /// startup hooks (the install hook drives the auth-fork onboarding URL).
+    func fireExtensionLifecycle(firstRun: Bool) {
+        if firstRun {
+            pushEvent(key: "runtime.onInstalled", args: [["reason": "install", "temporary": false]], to: "host")
+        } else {
+            pushEvent(key: "runtime.onStartup", args: [], to: "host")
+        }
+    }
+
+    /// Push an event into a specific named context (no broadcast).
+    func pushEvent(key: String, args: [Any], to context: String) {
+        deliver(["__shim": "push", "key": key, "args": args], to: context)
+    }
+
+    private func deliver(_ env: [String: Any], to name: String) {
+        guard let ctx = contexts[name], let webView = ctx.webView,
+              let data = try? JSONSerialization.data(withJSONObject: env),
               let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.__shimPush(\(json))")
+        if let world = ctx.world {
+            // page isolated world → content-shim's __muninnContentPush
+            webView.evaluateJavaScript("__muninnContentPush(\(json))", in: nil, in: world)
+        } else {
+            // host page MAIN world → __shimPush → worker
+            webView.evaluateJavaScript("window.__shimPush(\(json))")
+        }
     }
 
     // MARK: - audit

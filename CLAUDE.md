@@ -22,7 +22,9 @@ Analysis, Planning, and Solutioning (architecture) are **complete and approved**
 
 **Two carries into E6:** (1) the host now uses a dedicated `WKWebsiteDataStore` (for the per-process throttle latch) — verify the auth-fork handshake doesn't depend on a shared cookie store with `*.proton.me` tabs; (2) the native→content inbound push path is unwired (login uses the postMessage fallback, not `onMessageExternal`, so out of S2 scope — E5/E6 wire it).
 
-**Next step in the pipeline: E6 (auth-fork login — the first go/no-go gate).** Then E4 (scheme handler / S6) and E5 (injection + frame registry, incl. `runtime.getFrameId` per the E1 re-grep, subsuming the minimal `ForkBridgeInjector`). Honor the ratified deviations (FR-12 stub is skeleton scope; FR-13 flows via the vendored fork.js). Don't gold-plate — this is a solo passion project, not enterprise compliance.
+**E6 (auth-fork login) is CHECKPOINTED at a precise, non-D4 blocker** (`research/e6-auth-fork-2026-07-17.md`). Built + green (23 tests): the minimal navigable shell (`AppShell`), the cross-context request/response **message bus** (page `runtime.sendMessage` → host worker `onMessage` → `sendResponse`, under canonical id), and the fork trigger (`runtime.onInstalled` → `background.js` `tabs.create` → the onboarding URL, now wired to the shell). Two live login attempts (Calvin at the keyboard, no credentials touched): the onboarding page loads with correct fork params, but the account app reports **"Proton Pass is missing permissions"** — because we inject only `fork.js`, not `orchestrator.js` (the general content script the account app's extension-detection depends on). **This couples E6 to E5.**
+
+**Next step in the pipeline: E5 (general injection — `orchestrator.js` + frame registry, FR-9, incl. `runtime.getFrameId`), subsuming the minimal `ForkBridgeInjector`), then re-attempt the E6 gate.** Also pending: E4 (scheme handler / S6). Honor the ratified deviations (FR-12 stub is skeleton scope; FR-13 flows via the vendored fork.js). Not D4 — engine/boot/injection/bus all work. Don't gold-plate — solo passion project.
 
 ## Ground rules (non-negotiable)
 
