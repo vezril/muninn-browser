@@ -30,6 +30,7 @@ final class BackgroundHost: NSObject {
 
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(ExtensionSchemeHandler(), forURLScheme: PassBundle.scheme)
+        HostThrottling.apply(to: config, host: self)
 
         let bridge = HostBridge(host: self)
         config.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "broker")
@@ -97,6 +98,13 @@ final class BackgroundHost: NSObject {
         // arr is ["...escaped..."]; unwrap to the single JS string literal.
         let literal = String(arr.dropFirst().dropLast())
         webView.evaluateJavaScript("window.__shimEval(\(literal))")
+    }
+
+    /// The host's WebContent process id (SPI, test-only — asserts process isolation
+    /// from tabs, required for the per-process throttling latch to hold).
+    var webContentPID: pid_t? {
+        guard let wv = webView, let n = wv.value(forKey: "_webProcessIdentifier") as? NSNumber else { return nil }
+        return n.int32Value > 0 ? n.int32Value : nil
     }
 
     /// Snapshot for the audit artifact writer.
