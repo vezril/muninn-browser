@@ -80,10 +80,10 @@ final class OrchestratorBootAuditTests: XCTestCase {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
         let broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
         let host = BackgroundHost(broker: broker)
-        let world = WKContentWorld.world(name: ForkBridgeInjector.isolatedWorldName)
+        let world = WKContentWorld.world(name: InjectionCoordinator.isolatedWorldName)
         // Instrumentation + keep-awake go in via the config hook (webView.configuration
         // is a copy, so post-creation addUserScript is futile).
-        let injector = ForkBridgeInjector(broker: broker) { config in
+        let injector = InjectionCoordinator(broker: broker) { config in
             config.userContentController.addUserScript(
                 WKUserScript(source: Self.instrumentation, injectionTime: .atDocumentStart,
                              forMainFrameOnly: false, in: world))

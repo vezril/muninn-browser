@@ -20,7 +20,7 @@ final class E6MessageBusTests: XCTestCase {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
         let broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
         let host = BackgroundHost(broker: broker)
-        let page = ForkBridgeInjector(broker: broker, injectContentScripts: false) // pure bus, no orchestrator
+        let page = InjectionCoordinator(broker: broker, injectContentScripts: false) // pure bus, no orchestrator
         defer { page.stop(); host.stop() }
 
         host.firesLifecycleOnBoot = false // isolate to the pure bus; no onboarding listeners
@@ -42,7 +42,7 @@ final class E6MessageBusTests: XCTestCase {
         let r = try await page.webView.callAsyncJavaScript(
             "return await globalThis.browser.runtime.sendMessage({__e6:'ping'})",
             arguments: [:], in: nil,
-            contentWorld: WKContentWorld.world(name: ForkBridgeInjector.isolatedWorldName))
+            contentWorld: WKContentWorld.world(name: InjectionCoordinator.isolatedWorldName))
 
         let dict = r as? [String: Any]
         XCTAssertEqual(dict?["echo"] as? String, "ping", "cross-context sendMessage did not deliver/return")

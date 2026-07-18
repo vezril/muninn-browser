@@ -2,19 +2,19 @@ import XCTest
 import WebKit
 @testable import Muninn
 
-/// S2 spike tests (fork-bridge-isolation): the load-bearing claim is that the
+/// S2 isolation tests (InjectionCoordinator): the load-bearing claim is that the
 /// shim lives ONLY in an isolated content world — the page MAIN world stays
 /// clean, so account.proton.me takes the postMessage fallback and hostile pages
 /// can't reach the shim.
 @MainActor
-final class ForkBridgeIsolationTests: XCTestCase {
+final class InjectionCoordinatorIsolationTests: XCTestCase {
 
     private var broker: MessageBroker!
-    private var injector: ForkBridgeInjector!
+    private var injector: InjectionCoordinator!
 
     override func setUp() {
         broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
-        injector = ForkBridgeInjector(broker: broker)
+        injector = InjectionCoordinator(broker: broker)
     }
     override func tearDown() { injector?.stop(); injector = nil; broker = nil }
 
@@ -28,13 +28,13 @@ final class ForkBridgeIsolationTests: XCTestCase {
 
     /// Fork-host scoping is a pure decision — no network.
     func testForkHostMatching() {
-        XCTAssertTrue(ForkBridgeInjector.matchesForkHost("account.proton.me"))
-        XCTAssertTrue(ForkBridgeInjector.matchesForkHost("ACCOUNT.PROTON.ME")) // case-folded
+        XCTAssertTrue(InjectionCoordinator.matchesForkHost("account.proton.me"))
+        XCTAssertTrue(InjectionCoordinator.matchesForkHost("ACCOUNT.PROTON.ME")) // case-folded
         // Exact host match (Chrome match-pattern semantics) — subdomains are NOT in scope.
-        XCTAssertFalse(ForkBridgeInjector.matchesForkHost("sub.account.proton.me"))
-        XCTAssertFalse(ForkBridgeInjector.matchesForkHost("example.com"))
-        XCTAssertFalse(ForkBridgeInjector.matchesForkHost("account.proton.me.evil.com"))
-        XCTAssertFalse(ForkBridgeInjector.matchesForkHost("proton.me"))
+        XCTAssertFalse(InjectionCoordinator.matchesForkHost("sub.account.proton.me"))
+        XCTAssertFalse(InjectionCoordinator.matchesForkHost("example.com"))
+        XCTAssertFalse(InjectionCoordinator.matchesForkHost("account.proton.me.evil.com"))
+        XCTAssertFalse(InjectionCoordinator.matchesForkHost("proton.me"))
     }
 
     /// The core S2 guarantee, hermetic (loadHTMLString, no network): MAIN world
@@ -81,7 +81,7 @@ final class ForkBridgeIsolationTests: XCTestCase {
         return g && g.s2;
         """
         let r = try? await i.webView.callAsyncJavaScript(
-            js, arguments: [:], in: nil, contentWorld: WKContentWorld.world(name: ForkBridgeInjector.isolatedWorldName))
+            js, arguments: [:], in: nil, contentWorld: WKContentWorld.world(name: InjectionCoordinator.isolatedWorldName))
         XCTAssertEqual(r as? String, "ok")
     }
 }

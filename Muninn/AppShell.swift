@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 /// The minimal navigable shell (FR-1/4/5): one window, one tab (the page
-/// `WKWebView` from `ForkBridgeInjector`, which carries the isolated-world shim
+/// `WKWebView` from `InjectionCoordinator`, which carries the isolated-world shim
 /// + fork.js scoping), an address field, and back/forward/reload. Owns the
 /// broker, the always-resident background host, and the page context — so the
 /// auth-fork bus (page ⇄ broker ⇄ host) is live end to end.
@@ -13,7 +13,7 @@ final class AppShell: NSObject {
     private let window: NSWindow
     let broker: MessageBroker
     let host: BackgroundHost
-    let page: ForkBridgeInjector
+    let page: InjectionCoordinator
 
     private let addressField = NSTextField()
     private let backButton = NSButton()
@@ -24,7 +24,7 @@ final class AppShell: NSObject {
     override init() {
         broker = MessageBroker()
         host = BackgroundHost(broker: broker)
-        page = ForkBridgeInjector(broker: broker)
+        page = InjectionCoordinator(broker: broker)
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),

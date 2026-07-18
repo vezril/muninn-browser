@@ -94,9 +94,9 @@ final class FrameRegistryTests: XCTestCase {
     func testGetFrameIdMainFrameViaBridge() async throws {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
         let broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
-        let injector = ForkBridgeInjector(broker: broker, injectContentScripts: false)
+        let injector = InjectionCoordinator(broker: broker, injectContentScripts: false)
         defer { injector.stop() }
-        let world = WKContentWorld.world(name: ForkBridgeInjector.isolatedWorldName)
+        let world = WKContentWorld.world(name: InjectionCoordinator.isolatedWorldName)
 
         injector.webView.loadHTMLString("<!doctype html><html><body>main</body></html>",
                                         baseURL: URL(string: "https://example.com/"))
@@ -121,7 +121,7 @@ final class FrameRegistryTests: XCTestCase {
     func testSubframeGetsDistinctId() async throws {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
         let broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
-        let injector = ForkBridgeInjector(broker: broker, injectContentScripts: false)
+        let injector = InjectionCoordinator(broker: broker, injectContentScripts: false)
         defer { injector.stop() }
 
         // srcdoc iframe: a real subframe, same-origin (inherits example.com).
