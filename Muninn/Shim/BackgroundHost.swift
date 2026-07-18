@@ -46,6 +46,12 @@ final class BackgroundHost: NSObject {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
+        // Gate-mode only: Safari Web Inspector on the background host page (so its
+        // Worker's console — e.g. background.js "[Activation] missing permissions" —
+        // is visible during a supervised diagnostic gate). Never in a shipping run.
+        if ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil, #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
         self.webView = webView
         broker.registerContext("host", webView: webView, world: nil)
 

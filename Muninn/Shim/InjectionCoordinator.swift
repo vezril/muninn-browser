@@ -96,6 +96,12 @@ final class InjectionCoordinator: NSObject {
         configHook?(config)
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
+        // Gate-mode only: allow Safari Web Inspector on the page (diagnostics). Never
+        // in a shipping run — inspection is a debug affordance, and the gate is a
+        // human-supervised session (ground rules 1+2).
+        if ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil, #available(macOS 13.3, *) {
+            self.webView.isInspectable = true
+        }
         // Register as the "page" push context so the broker can deliver events
         // (and future onMessage) into this isolated world.
         broker.registerContext("page", webView: webView, world: isolatedWorld)

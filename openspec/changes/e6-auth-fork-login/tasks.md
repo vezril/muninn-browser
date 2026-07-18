@@ -39,6 +39,8 @@
 
 > **CHECKPOINT (2026-07-17):** Groups 1–3 done and green (shell + cross-context bus + isolation, 23 tests). Group 4 reached a precise, non-D4 blocker that needs E5's `orchestrator.js` injection. Recommend resequencing E5 before finishing E6, or a cheap experiment (inject orchestrator.js into the page isolated world and re-check the permission error).
 
+> **CHECKPOINT (2026-07-17, post-E5):** E5 done. Built the externally_connectable MAIN-world bridge (group 3b, 37 tests green) and re-attempted the gate (4th live gate). **Bridge is confirmed installed live** (Web Inspector on account.proton.me MAIN world: `chrome.runtime.sendMessage` = function, `chrome.runtime.id` = canonical). But "missing permissions" persists: the account app's `onboarding.js` throws `t4.runtime` undefined (its webextension-polyfill fails to capture the API), and the manual round-trip couldn't be confirmed (inspector console context kept flipping frames). Full findings + 3 ranked hypotheses: `research/e6-external-gate-2026-07-17.md`. **Leading fix next: expose ONLY `window.chrome` (drop `window.browser`) to match real Chrome** — our `window.browser` likely sends Proton's polyfill down the Firefox branch and breaks it. Then add a programmatic gate signal (external message `type` + round-trip completion) instead of manual console probing. STILL NOT D4 — bridge installs and is correctly shaped live.
+
 ## 5. Review & ship
 
 - [ ] 5.1 Refute-oriented review (MAIN-world isolation still airtight with a real navigable tab; no credential leak on any new path — address bar, relay, push; context-routing correctness)
