@@ -53,6 +53,8 @@ final class AppShell: NSObject {
                 FileHandle.standardError.write(Data(stamped.utf8)) // stderr is unbuffered
             }
             broker.onCrossContextRelay = { direction, senderHost in gate("E6-GATE \(direction) from \(senderHost)") }
+            broker.onExternalRelay = { type, senderHost, responded in
+                gate("E6-GATE ext-msg type=\(type) from \(senderHost) " + (responded ? "→ RESPONDED" : "→ sent")) }
             broker.onAudit = { entry in
                 if (entry["kind"] as? String) == "open-url" { gate("E6-GATE open-url \(entry["member"] ?? "?") -> \(entry["url"] ?? "?")") }
             }

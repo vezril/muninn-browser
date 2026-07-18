@@ -72,8 +72,13 @@
   }
 
   var runtime = { id: CANONICAL_ID, sendMessage: sendMessage, connect: connect };
+  // Expose ONLY window.chrome — exactly what a real Chrome exposes to an
+  // externally_connectable page. Do NOT set window.browser: Proton's account app
+  // uses the Mozilla webextension-polyfill, which wraps `chrome` into a promisified
+  // `browser` ONLY when `window.browser` is undefined. If we pre-set a minimal
+  // `window.browser`, the polyfill skips wrapping and uses our incomplete object
+  // (observed live as `t4.runtime` undefined in onboarding.js). Leaving it unset
+  // lets the app build its own complete `browser` from our `chrome`.
   window.chrome = window.chrome || {};
   window.chrome.runtime = window.chrome.runtime || runtime;
-  window.browser = window.browser || {};
-  window.browser.runtime = window.browser.runtime || runtime;
 })();

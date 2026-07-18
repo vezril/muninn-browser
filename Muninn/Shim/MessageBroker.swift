@@ -261,6 +261,12 @@ final class MessageBroker: NSObject {
     /// tokens, only direction + sender host + timing). Set solely in the gate run.
     var onCrossContextRelay: ((_ direction: String, _ senderHost: String) -> Void)?
 
+    /// E6 gate observation for the externally_connectable path: the message `type`
+    /// (a control discriminator like "pass-installed" — NEVER payload/credentials),
+    /// the sender host, and whether the worker actually responded (round-trip
+    /// completion). Set only in the gate run.
+    var onExternalRelay: ((_ type: String, _ senderHost: String, _ responded: Bool) -> Void)?
+
     func routeSendMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
         // Internal (isolated content script) sender: carries the canonical id.
         let sender: [String: Any] = [
@@ -282,7 +288,13 @@ final class MessageBroker: NSObject {
             "url": senderURL ?? "", "origin": origin ?? "",
             "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
         ]
-        return await route(key: "runtime.onMessageExternal", message: message, sender: sender, senderURL: senderURL)
+        // Gate signal: message TYPE only (safe discriminator), not payload.
+        let type = (message as? [String: Any])?["type"] as? String ?? "?"
+        let host = senderURL.flatMap { URL(string: $0)?.host } ?? "?"
+        onExternalRelay?(type, host, false)
+        let result = await route(key: "runtime.onMessageExternal", message: message, sender: sender, senderURL: senderURL)
+        onExternalRelay?(type, host, !(result is NSNull) && result != nil)
+        return result
     }
 
     /// Shared cross-context request/response: push `key` into the host worker with

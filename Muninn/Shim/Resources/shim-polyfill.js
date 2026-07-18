@@ -71,9 +71,13 @@
     }
   }
 
-  // runtime.onMessage delivery with Chrome's sendResponse contract: a listener
-  // returning `true` keeps the channel open for an async sendResponse; the
-  // response is correlated back to native via respId (E6 cross-context bus).
+  // runtime.onMessage delivery. Supports BOTH response contracts:
+  //   • callback style — a listener returning `true` keeps the channel open for a
+  //     later sendResponse(...); a synchronous sendResponse(...) also works;
+  //   • Promise style (modern MV3 / webextension-polyfill) — a listener returning a
+  //     thenable resolves to the response. Proton's `lU.onMessage` is async, so this
+  //     path is load-bearing for the account handshake (pass-installed, etc.).
+  // The response is correlated back to native via respId (E6 cross-context bus).
   function fireMessage(key, message, sender, respId) {
     var l = listeners[key] || [];
     var responded = false;
@@ -83,8 +87,15 @@
     }
     var wantsAsync = false;
     for (var i = 0; i < l.length; i++) {
-      try { if (l[i](message, sender, sendResponse) === true) wantsAsync = true; }
-      catch (e) { /* listener errors are the extension's */ }
+      try {
+        var ret = l[i](message, sender, sendResponse);
+        if (ret === true) {
+          wantsAsync = true; // classic: async sendResponse coming
+        } else if (ret && typeof ret.then === "function") {
+          wantsAsync = true; // modern: the resolved value IS the response
+          ret.then(function (r) { sendResponse(r); }, function () { sendResponse(null); });
+        }
+      } catch (e) { /* listener errors are the extension's */ }
     }
     // No async responder and nobody answered synchronously → close the channel.
     if (!wantsAsync && !responded && respId) sendResponse(null);

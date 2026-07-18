@@ -47,6 +47,35 @@ final class E6ExternalConnectableTests: XCTestCase {
                        "onMessageExternal sender.origin should be the page origin")
     }
 
+    /// A Promise-returning onMessageExternal listener (the modern contract Proton's
+    /// lU.onMessage uses) resolves back to the page — the account handshake path.
+    func testExternalMessagePromiseReturningListener() async throws {
+        try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")
+        let broker = MessageBroker(storage: ExtensionStorage(inMemoryOnly: true))
+        let host = BackgroundHost(broker: broker)
+        let page = InjectionCoordinator(broker: broker, injectContentScripts: false)
+        defer { page.stop(); host.stop() }
+        host.firesLifecycleOnBoot = false
+        host.start()
+        await waitFor("host boot", timeout: 25) { host.bootSucceeded }
+
+        // Listener returns a Promise (no sendResponse call) — like `async () => true`
+        // / registerMessage(PROBE, () => true) wrapped by the polyfill.
+        host.evalInWorker(
+            "browser.runtime.onMessageExternal.addListener(function(m,s){"
+            + "if(m&&m.type==='pass-installed'){return Promise.resolve(true);}});")
+
+        page.webView.loadHTMLString("<!doctype html><html><body>acct</body></html>",
+                                    baseURL: URL(string: "https://account.proton.me/"))
+        await waitFor("load", timeout: 10) { page.events.contains { ($0["kind"] as? String) == "didFinish" } }
+
+        let r = try await page.webView.callAsyncJavaScript(
+            "return await window.chrome.runtime.sendMessage(\"\(PassBundle.canonicalID)\", {type:'pass-installed'})",
+            arguments: [:], in: nil, contentWorld: .page)
+        XCTAssertEqual((r as? NSNumber)?.boolValue, true,
+                       "a Promise-returning onMessageExternal listener must resolve its value back to the page")
+    }
+
     /// The narrow bridge is present on a blessed origin: only runtime.{id,sendMessage,connect}.
     func testBridgeShapeOnBlessedOrigin() async throws {
         try XCTSkipUnless(PassBundle.isPresent, "Pass bundle not embedded")

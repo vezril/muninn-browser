@@ -66,9 +66,59 @@ compute `granted = true`.
    the app caches undefined. Verify our MAIN-world user script truly runs before
    `onboarding.js` (it should, per WebKit's document_start guarantee).
 
-## Status
+## Status (at gate 4)
 
 Bridge is confirmed present and correctly shaped on the live account page — a real step
 past the previous gate. The remaining gap is the account app's API capture / round-trip,
 narrowed to the three hypotheses above. NOT D4. Next step is code (hypothesis 1) + a
 reliable programmatic gate signal (hypothesis 2), not more manual console inspection.
+
+---
+
+## RESOLUTION — gates 5 & 6 (2026-07-18): "missing permissions" CLEARED
+
+Two fixes, both validated live via the programmatic gate signal (payload-free —
+message `type` + round-trip completion only):
+
+1. **Hypothesis 1 confirmed — drop `window.browser`.** `externally-connectable.js` now
+   exposes ONLY `window.chrome`. Proton's account app uses the Mozilla
+   webextension-polyfill, which wraps `chrome` into a promisified `browser` only when
+   `window.browser` is undefined. Our pre-set minimal `window.browser` made it skip
+   wrapping and use the incomplete object → `t4.runtime` undefined. Dropping it fixed the
+   error, and the account app began **sending `pass-installed`** through the bridge.
+   - Gate 5 log: `ext-msg type=pass-installed … → sent` (but not RESPONDED).
+
+2. **`fireMessage` now supports Promise-returning listeners.** The worker onMessage
+   delivery only handled `sendResponse` + `return true`; Proton's `lU.onMessage` is
+   async (returns a Promise), so its response was dropped and we sent `null`. Now a
+   thenable return resolves to the response.
+   - Gate 6 log: `ext-msg type=pass-installed … → RESPONDED`.
+   - **UI advanced past "missing permissions" to "Welcome to your new password manager."**
+
+The detection/permission barrier that blocked E6 across four gates is **RETIRED**.
+Tests: `E6ExternalConnectableTests.testExternalMessagePromiseReturningListener` (green).
+
+## NEXT BLOCKER — the auth-fork session handoff (gate 6, deeper)
+
+Proceeding into sign-in, the account app sent the actual **`fork`** message
+(ACCOUNT_FORK) — and it **RESPONDED** (`ext-msg type=fork … → RESPONDED`), so the fork
+handler in `background.js` ran. But the UI then showed **"Unable to Sign In to Proton
+Pass. Unknown error occurred."** So we are now at the **session-fork completion** step
+(Spike B Risk 1's core), past detection.
+
+**Leading hypothesis: Decision 4 (cookie/store topology).** The background host uses a
+dedicated `WKWebsiteDataStore` (required for the E3 timer fix / per-process throttle
+latch). The auth-fork completes the session by pulling/decrypting the forked session,
+which likely needs cookies/session shared with the `account.proton.me` tab — but the
+dedicated store isolates the host worker's cookies from the page tab. This is the exact
+open architectural unknown flagged in Decision 4.
+
+**Next session:** investigate the fork handler's requirements (what network/session
+state it needs), then resolve the Decision 4 trade — e.g. share the data store between
+host and page (and re-verify the timer fix still holds under a shared store), or bridge
+the session differently. Ground rule 1 throughout: never capture the fork payload,
+session tokens, or credentials — the gate log stays type-only.
+
+NOT D4-the-decision-to-abandon: engine, boot, injection, bus, frame registry,
+externally_connectable detection, and now the fork message delivery ALL work live. The
+remaining work is the session handoff topology.
