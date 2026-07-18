@@ -22,7 +22,16 @@
 - [x] 3.2 Fork scoping + isolation in the page context covered by `ForkBridgeIsolationTests` (host-scoped injection, MAIN-world clean) + the bus test loading real pages; the shell reuses the same injector, so the guarantees carry.
 - [x] 3.3 Full suite green (23 tests) after bus + shell. (Pristine-clone re-verify folded into ship.)
 
-## 4. The human gate (auth-fork-login — the Risk-1 go/no-go) — INCOMPLETE (blocker reached, not D4)
+## 3b. externally_connectable MAIN-world bridge — the real E6 blocker fix (added 2026-07-17, design Decision 5)
+
+> The E5 live gate (`research/e5-orchestrator-gate-2026-07-17.md`) re-diagnosed the "missing permissions" blocker: it is NOT orchestrator (that's injected and the bus works live), but the account app's presence-check running in the page **MAIN world via `externally_connectable`** (`chrome.runtime.sendMessage(extId)`), which S2 keeps empty. `background.js` reuses `onMessage` for `onMessageExternal.addListener`, and the worker shim already models `onMessageExternal` delivery — so the fix is a narrow MAIN-world bridge, not new host work.
+
+- [x] 3b.1 `externally-connectable.js` — MAIN-world `chrome.runtime = {id, sendMessage, connect}`, **self-gated** to the manifest's `externally_connectable` hosts (interpolated); every other origin's MAIN world stays clean (S2). No native handle in MAIN — `sendMessage` bridges via `window.postMessage` to the isolated world.
+- [x] 3b.2 Isolated relay (`content-polyfill.js`): a `window` `message` listener (double-gated on the frame's own blessed host + same-origin) routes `__muninnExt` → native `runtime.__externalMessage` → posts the response back to MAIN.
+- [x] 3b.3 Native: `MessageBroker.routeExternalMessageToHost` pushes `runtime.onMessageExternal` with an EXTERNAL sender (`url`/`origin`/`tab`, no extension `id`); `IsolatedBridge` re-checks `frameInfo.securityOrigin.host` ∈ manifest hosts (defense-in-depth). `PassBundle.externallyConnectableHosts` derives the hosts from the manifest.
+- [x] 3b.4 `E6ExternalConnectableTests` (3, green): MAIN-world `chrome.runtime.sendMessage(extId,…)` → `onMessageExternal` → response round-trip; narrow bridge shape on a blessed origin; MAIN stays clean on a non-blessed origin. Full suite 34 tests green.
+
+## 4. The human gate (auth-fork-login — the Risk-1 go/no-go) — READY TO RE-ATTEMPT (bridge built)
 
 - [x] 4.1 **[HUMAN GATE — ground rule 2]** Warned Calvin; launched the app (visible window) on his confirmation — twice.
 - [~] 4.2 **[HUMAN GATE — ground rule 1]** Calvin at the keyboard, no credentials touched. **Progress:** fixed the fork trigger (`runtime.onInstalled` → `background.js` `tabs.create` → onboarding URL, now wired to the shell); the onboarding page loads with correct fork params. **Blocker:** the account app reports *"Proton Pass is missing permissions"* — the extension↔page permission handshake is unsatisfied. Pickup not yet observed.

@@ -61,6 +61,18 @@ final class InjectionCoordinator: NSObject {
         if let poly = Self.resource("content-polyfill", "js") {
             addUserScript(poly, at: .atDocumentStart, world: isolatedWorld, allFrames: true)
         }
+        // externally_connectable bridge — MAIN world, document_start, all frames.
+        // Self-gates on the manifest's externally_connectable hosts, so every other
+        // origin's MAIN world stays clean (S2). Injected unconditionally (it's the
+        // auth-fork detection path, independent of orchestrator).
+        if let ecTemplate = Self.resource("externally-connectable", "js"),
+           let hostsData = try? JSONSerialization.data(withJSONObject: PassBundle.externallyConnectableHosts),
+           let hostsJSON = String(data: hostsData, encoding: .utf8) {
+            let ec = ecTemplate
+                .replacingOccurrences(of: "__EC_HOSTS_JSON__", with: hostsJSON)
+                .replacingOccurrences(of: "__CANONICAL_ID__", with: PassBundle.canonicalID)
+            addUserScript(ec, at: .atDocumentStart, world: .page, allFrames: true)
+        }
         if injectContentScripts {
             // orchestrator.js — the general content script (all http(s) pages).
             if let root = PassBundle.rootURL,
@@ -209,6 +221,20 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
         // host worker's onMessage; the return is background.js's sendResponse).
         if ns == "runtime", (env["method"] as? String) == "sendMessage" {
             let result = await injector.broker.routeSendMessageToHost(args.first, senderURL: injector.webView?.url?.absoluteString)
+            return (result, nil)
+        }
+        // MAIN-world externally_connectable bridge (E6): a page's
+        // chrome.runtime.sendMessage(extId, msg), relayed here from MAIN via the
+        // isolated world. NATIVE ORIGIN GATE (defense-in-depth beyond the JS
+        // location.host checks): only frames whose real securityOrigin host is a
+        // manifest externally_connectable host reach onMessageExternal.
+        if ns == "runtime", (env["method"] as? String) == "__externalMessage" {
+            let host = message.frameInfo.securityOrigin.host.lowercased()
+            guard PassBundle.externallyConnectableHosts.contains(host) else {
+                return (nil, "origin not externally_connectable")
+            }
+            let result = await injector.broker.routeExternalMessageToHost(
+                args.first, senderURL: message.frameInfo.request.url?.absoluteString)
             return (result, nil)
         }
         // Everything else is a synchronous self-service Tier-1 call.

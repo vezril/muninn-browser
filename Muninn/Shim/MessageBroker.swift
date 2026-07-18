@@ -262,17 +262,39 @@ final class MessageBroker: NSObject {
     var onCrossContextRelay: ((_ direction: String, _ senderHost: String) -> Void)?
 
     func routeSendMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
+        // Internal (isolated content script) sender: carries the canonical id.
+        let sender: [String: Any] = [
+            "id": PassBundle.canonicalID, "url": senderURL ?? "",
+            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
+        ]
+        return await route(key: "runtime.onMessage", message: message, sender: sender, senderURL: senderURL)
+    }
+
+    /// Page MAIN-world `chrome.runtime.sendMessage(extId, msg)` on an
+    /// `externally_connectable` origin → the host worker's `onMessageExternal`
+    /// listeners (E6 auth-fork detection). The sender is an EXTERNAL web sender —
+    /// it carries `url`/`origin`/`tab` but NO extension `id` (Chrome semantics: a
+    /// web page is not the extension).
+    func routeExternalMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
+        let origin = senderURL.flatMap { URL(string: $0).flatMap { u in
+            u.scheme.flatMap { s in u.host.map { h in "\(s)://\(h)" } } } }
+        let sender: [String: Any] = [
+            "url": senderURL ?? "", "origin": origin ?? "",
+            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
+        ]
+        return await route(key: "runtime.onMessageExternal", message: message, sender: sender, senderURL: senderURL)
+    }
+
+    /// Shared cross-context request/response: push `key` into the host worker with
+    /// `{message, sender, respId}` and await the worker's `sendResponse`.
+    private func route(key: String, message: Any?, sender: [String: Any], senderURL: String?) async -> Any? {
         guard contexts["host"] != nil else { return NSNull() }
         let senderHost = senderURL.flatMap { URL(string: $0)?.host } ?? "?"
         onCrossContextRelay?("relay-in", senderHost)
         respSeq += 1
         let id = "resp\(respSeq)"
-        let sender: [String: Any] = [
-            "id": PassBundle.canonicalID, "url": senderURL ?? "",
-            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
-        ]
         let env: [String: Any] = [
-            "__shim": "push", "key": "runtime.onMessage",
+            "__shim": "push", "key": key,
             "args": [message ?? NSNull(), sender], "respId": id,
         ]
         let box = await withCheckedContinuation { (cont: CheckedContinuation<AnyBox, Never>) in

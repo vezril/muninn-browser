@@ -142,6 +142,34 @@
   g.chrome = api;
   g.browser = api;
 
+  // externally_connectable bridge (E6): the MAIN-world chrome.runtime shim (only
+  // present on manifest externally_connectable hosts) posts sendMessage here via
+  // window.postMessage; relay to native onMessageExternal and post the response
+  // back to MAIN. Double-gated: only when THIS frame's own host is blessed and the
+  // message is same-origin (a hostile cross-origin frame can't spoof it, and the
+  // native side re-checks the origin). Uses the DOM window (shared with MAIN).
+  var EC_HOSTS = [];
+  try {
+    var ecm = (MANIFEST.externally_connectable && MANIFEST.externally_connectable.matches) || [];
+    EC_HOSTS = ecm.map(function (p) { try { return new URL(p.replace("/*", "/")).host.toLowerCase(); } catch (_) { return null; } })
+                  .filter(Boolean);
+  } catch (_) {}
+  try {
+    if (broker && EC_HOSTS.indexOf(String(window.location.host).toLowerCase()) >= 0) {
+      window.addEventListener("message", function (ev) {
+        var d = ev && ev.data;
+        if (!d || d.__muninnExt !== "sendMessage") return;
+        if (ev.origin !== window.location.origin) return; // same-frame only
+        var reqId = d.reqId;
+        function reply(result) {
+          window.postMessage({ __muninnExtResp: true, reqId: reqId, result: (result === undefined ? null : result) },
+                             window.location.origin);
+        }
+        callNative("runtime", "__externalMessage", [d.message]).then(reply, function () { reply(null); });
+      });
+    }
+  } catch (_) {}
+
   // Resolve THIS frame's id from native (message.frameInfo → FrameRegistry). Async,
   // but getFrameId's callers run after boot, so the cached id is ready in time; the
   // main frame's 0 default is correct until then.
