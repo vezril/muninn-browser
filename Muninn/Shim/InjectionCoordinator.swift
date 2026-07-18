@@ -1,16 +1,17 @@
 import Foundation
 import WebKit
 
-/// Minimal content-world injection for the S2 spike (NOT the full FR-9/E5
-/// InjectionCoordinator). Owns a page WKWebView whose isolated `WKContentWorld`
-/// carries the content shim + (on `*.proton.me`) Proton's `fork.js`, wired to
-/// the MessageBroker as a second context. The page MAIN world gets nothing —
-/// that isolation is the load-bearing S2 guarantee (ADR-007).
-///
-/// E5 replaces this with the general injector + frame registry; the seam is the
-/// `isolatedWorld` + broker registration.
+/// FR-9 content-world injection coordinator (E5; grew out of the S2-spike
+/// `ForkBridgeInjector`). Owns a page WKWebView whose isolated `WKContentWorld`
+/// carries the full manifest injection set — bootstrap → content-polyfill
+/// (`document_start`) → `orchestrator.js` (`document_end`, all frames) →
+/// `webauthn.js` (MAIN, `document_start`) — plus, on `account.proton.me`, Proton's
+/// `fork.js`; all wired to the MessageBroker as a second context, and feeding the
+/// `FrameRegistry` from each frame's `WKScriptMessage.frameInfo`. The page MAIN
+/// world gets nothing but `webauthn.js` (which references no `browser.*`) — that
+/// isolation is the load-bearing S2 guarantee (ADR-007).
 @MainActor
-final class ForkBridgeInjector: NSObject {
+final class InjectionCoordinator: NSObject {
     static let isolatedWorldName = "MuninnShim"
     static let forkMatchHostSuffix = "account.proton.me"
 
@@ -145,7 +146,7 @@ final class ForkBridgeInjector: NSObject {
     }
 }
 
-extension ForkBridgeInjector: WKNavigationDelegate {
+extension InjectionCoordinator: WKNavigationDelegate {
     /// A committed main-frame navigation invalidates the subframe tree (FR-9). Reset
     /// on `didCommit` — the point WebKit guarantees the new document has replaced the
     /// old — NOT on provisional start, so a failed/cancelled navigation attempt can't
@@ -178,8 +179,8 @@ extension ForkBridgeInjector: WKNavigationDelegate {
 /// Routes the isolated world's broker calls to the native MessageBroker.
 @MainActor
 private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
-    weak var injector: ForkBridgeInjector?
-    init(injector: ForkBridgeInjector) { self.injector = injector }
+    weak var injector: InjectionCoordinator?
+    init(injector: InjectionCoordinator) { self.injector = injector }
 
     func userContentController(_ ucc: WKUserContentController,
                               didReceive message: WKScriptMessage) async -> (Any?, String?) {

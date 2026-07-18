@@ -23,8 +23,8 @@
 
 ## 3. General injection (content-injection spec) — `InjectionCoordinator`
 
-- [~] 3.1 `InjectionCoordinator` (subsumes `ForkBridgeInjector`): `orchestrator.js` (isolated, `document_end`, all frames, all http(s)) + `webauthn.js` (MAIN, `document_start`, all frames) via `WKUserScript`; `fork.js` nav-gated to `account.proton.me` — _[full injection set wired into `ForkBridgeInjector`; formal rename deferred]_
-- [ ] 3.2 `AppShell` uses the coordinator; migrate the S2 isolation tests
+- [x] 3.1 `InjectionCoordinator` (renamed from `ForkBridgeInjector`): injects `orchestrator.js` (isolated, `document_end`, all frames) + `webauthn.js` (MAIN, `document_start`) via `WKUserScript`; `fork.js` nav-gated to `account.proton.me`. File `Muninn/Shim/InjectionCoordinator.swift`
+- [x] 3.2 `AppShell` uses `InjectionCoordinator`; S2 isolation tests migrated to `InjectionCoordinatorIsolationTests` (all references renamed; 31 tests green)
 
 ## 4. orchestrator boot audit (content-injection spec)
 
@@ -43,4 +43,4 @@
 - [x] 6.1 XCTest: **S2 MAIN-world isolation still holds** with the full injection set — `OrchestratorBootAuditTests` asserts MAIN `chrome` is undefined under bootstrap+content-polyfill+orchestrator+webauthn; 4 `ForkBridgeIsolationTests` green. "orchestrator boots clean" is validated by the live gate (task 4 finding — headless boot is offscreen-limited)
 - [x] 6.2 Full suite green: **30 XCTests, 0 failures** (`xcodebuild test -scheme Muninn`)
 - [x] 6.3 Refute-oriented review (swiftui-reviewer) done — 4 findings, all fixed + re-verified: (1) reset moved to `didCommit` (a cancelled nav no longer wipes live subframes); (2) `getFrameId` uses `window.top===window` so a subframe returns -1 (pending), never a false 0; (3) identical-URL subframe collision documented + codified in a test; (4) dead `webNavigation` stub case removed. 31 tests green
-- [~] 6.4 Ship via git-ship (PR-gated); update `CLAUDE.md`. **Live-gate result (task 1) reframes E6:** "missing permissions" is the MAIN-world externally_connectable check, not orchestrator — E6 needs the externally_connectable bridge next
+- [x] 6.4 Shipped via gated PR #14 (branch `feat/e5-audit-frame-registry`); `CLAUDE.md` updated (E5 done → E6 needs the MAIN-world externally_connectable bridge). Merge is the human gate
