@@ -28,7 +28,14 @@ final class ForkBridgeInjector: NSObject {
     /// - Parameter injectContentScripts: inject the vendored orchestrator.js /
     ///   webauthn.js (default true). Unit tests of the bus/isolation pass false to
     ///   exercise the shim without orchestrator's page-side behavior.
-    init(broker: MessageBroker, injectContentScripts: Bool = true) {
+    /// - Parameter configHook: called on the `WKWebViewConfiguration` after the
+    ///   shim's user scripts / handlers are installed but BEFORE the `WKWebView` is
+    ///   created (since `webView.configuration` is a copy, post-hoc mutation is
+    ///   futile). Test-only seam: the boot-audit harness uses it to add
+    ///   instrumentation user scripts and to keep an offscreen page process awake
+    ///   (`inactiveSchedulingPolicy = .none`). Production passes nil.
+    init(broker: MessageBroker, injectContentScripts: Bool = true,
+         configHook: ((WKWebViewConfiguration) -> Void)? = nil) {
         self.broker = broker
         self.isolatedWorld = WKContentWorld.world(name: Self.isolatedWorldName)
         super.init()
@@ -73,6 +80,7 @@ final class ForkBridgeInjector: NSObject {
             bridge, contentWorld: isolatedWorld, name: "brokerIsolated")
         self.bridge = bridge
 
+        configHook?(config)
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
         // Register as the "page" push context so the broker can deliver events
@@ -138,6 +146,15 @@ final class ForkBridgeInjector: NSObject {
 }
 
 extension ForkBridgeInjector: WKNavigationDelegate {
+    /// A committed main-frame navigation invalidates the subframe tree (FR-9). Reset
+    /// on `didCommit` — the point WebKit guarantees the new document has replaced the
+    /// old — NOT on provisional start, so a failed/cancelled navigation attempt can't
+    /// blank out the subframes of a page that's still on screen. The main frame id
+    /// stays 0; it re-registers on its next message.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        broker.frameRegistry.resetSubframes()
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let host = webView.url?.host ?? ""
         note("didFinish", ["host": host])
@@ -169,6 +186,14 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
         guard let injector, let env = message.body as? [String: Any] else { return (nil, "bad envelope") }
         let ns = env["ns"] as? String
         let args = env["args"] as? [Any] ?? []
+        // FR-9: register the calling frame on every message so getFrameId /
+        // webNavigation.get*Frames can resolve it. Subframes parent to the main
+        // frame (0) — precise nesting is post-MVP (Spike B risk #2, iframe autofill).
+        let frameId = injector.broker.frameRegistry.resolve(message.frameInfo)
+        // runtime.getFrameId self-resolution: the caller's own frame id.
+        if ns == "runtime", (env["method"] as? String) == "__resolveFrameId" {
+            return (frameId, nil)
+        }
         // Control channels from content-polyfill.
         if ns == "__audit", let d = args.first as? [String: Any] {
             injector.broker.record(ns: (d["ns"] as? String) ?? "?", member: (d["member"] as? String) ?? "?",

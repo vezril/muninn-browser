@@ -15,6 +15,10 @@ import AppKit
 final class MessageBroker: NSObject {
     let storage: ExtensionStorage
     let alarms = AlarmRegistry()
+    /// FR-9 frame registry (E5). Populated by the page's isolated bridge as frames
+    /// send messages; read here to answer `webNavigation.get*Frames` from either the
+    /// page or the host worker (shared broker, single-tab MVP).
+    let frameRegistry = FrameRegistry()
 
     /// Audit sink — every unmodelled access + host lifecycle event lands here.
     private(set) var auditLog: [[String: Any]] = []
@@ -75,8 +79,9 @@ final class MessageBroker: NSObject {
         case "windows": return windowsCall(method, args)
         case "action": return actionCall(method, args)
         case "clipboardWrite": return clipboardCall(args)
-        case "permissions", "scripting", "webNavigation":
-            // Truthful-minimum stubs; real behavior arrives with E5/E9.
+        case "webNavigation": return webNavigationCall(method, args)
+        case "permissions", "scripting":
+            // Truthful-minimum stubs; real behavior arrives with E9.
             return stubbed(ns: ns, method: method)
         default:
             record(ns: ns, member: method, kind: "unhandled-namespace")
@@ -136,6 +141,21 @@ final class MessageBroker: NSObject {
         case "clear": return alarms.clear(name: (args.first as? String) ?? "")
         case "clearAll": alarms.clearAll(); return true
         default: return NSNull()
+        }
+    }
+
+    /// FR-9: frame queries answered from the registry (single tab → tabId ignored).
+    private func webNavigationCall(_ method: String, _ args: [Any]) -> Any? {
+        switch method {
+        case "getAllFrames": return frameRegistry.all()
+        case "getFrame":
+            let opts = args.first as? [String: Any]
+            let frameId = (opts?["frameId"] as? Int) ?? (opts?["frameId"] as? NSNumber)?.intValue
+            if let id = frameId, let f = frameRegistry.frame(id) { return f }
+            return NSNull() // unknown id → null (Chrome semantics)
+        default:
+            record(ns: "webNavigation", member: method, kind: "call")
+            return NSNull()
         }
     }
 
@@ -220,7 +240,6 @@ final class MessageBroker: NSObject {
     private func stubbed(ns: String, method: String) -> Any? {
         switch ns {
         case "permissions": return method == "contains" ? true : NSNull()
-        case "webNavigation": return method == "getAllFrames" ? [] as [Any] : NSNull()
         default: return NSNull()
         }
     }

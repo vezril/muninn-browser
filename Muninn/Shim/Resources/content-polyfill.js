@@ -15,6 +15,12 @@
   var mh = (g.webkit && g.webkit.messageHandlers) || {};
   var broker = mh.brokerIsolated;
   var listeners = Object.create(null); // "ns.event" -> [fn]
+  // This frame's id. Synchronously distinguish the main frame (id 0, correct
+  // immediately) from a subframe (-1 = "pending", never a false 0) via reference
+  // identity, which is allowed cross-origin. The real subframe id is resolved from
+  // native on boot (below) and replaces the -1.
+  var currentFrameId = 0;
+  try { if (g.window && g.window.top !== g.window.self) currentFrameId = -1; } catch (_) { currentFrameId = -1; }
 
   function callNative(ns, method, args) {
     if (!broker) return Promise.reject(new Error("no isolated broker"));
@@ -50,7 +56,14 @@
   var SYNC_RUNTIME = {
     getURL: function (p) { var s = String(p || ""); if (s.charAt(0) === "/") s = s.slice(1); return "muninn-ext://" + CANONICAL_ID + "/" + s; },
     getManifest: function () { return MANIFEST; },
-    getFrameId: function () { return 0; }, // native resolves the real id; 0 = main default
+    // Safari-form runtime.getFrameId(target): 0/undefined/window/self → THIS frame.
+    // Main frame → 0 immediately; a subframe → -1 ("pending") until native resolves
+    // its real id, so a subframe is NEVER mistaken for the main frame. An
+    // iframe-element target (Proton's client.js autofill path) resolves the CHILD
+    // frame in Safari; that is post-MVP (Spike B risk #2). This best-effort returns
+    // this frame's id so orchestrator's `"getFrameId" in runtime` check passes and
+    // main-frame flows resolve correctly.
+    getFrameId: function () { return currentFrameId; },
   };
 
   function makeNamespace(ns) {
@@ -128,4 +141,12 @@
   // Install ONLY in this isolated world's global (never MAIN).
   g.chrome = api;
   g.browser = api;
+
+  // Resolve THIS frame's id from native (message.frameInfo → FrameRegistry). Async,
+  // but getFrameId's callers run after boot, so the cached id is ready in time; the
+  // main frame's 0 default is correct until then.
+  if (broker) {
+    broker.postMessage({ ns: "runtime", method: "__resolveFrameId", args: [] })
+      .then(function (id) { if (typeof id === "number") currentFrameId = id; }, function () {});
+  }
 })();

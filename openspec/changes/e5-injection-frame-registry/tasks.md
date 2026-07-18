@@ -14,7 +14,7 @@
 
 ## 1. Cheap experiment first (de-risk before full build)
 
-- [ ] 1.1 Inject `orchestrator.js` into the page isolated world (alongside a fuller polyfill) the same way `fork.js` is injected; relaunch the E6 gate flow and observe whether the account app's **"missing permissions"** clears (or advances). Record the result — this confirms/refutes the orchestrator hypothesis before the full frame-registry investment (ground rules 1+2 if it reaches a login) — _[injection built + green headlessly; live gate deferred to fresh session]_
+- [x] 1.1 Inject `orchestrator.js` … relaunch the E6 gate flow and observe whether the account app's **"missing permissions"** clears. **DONE — live gate 2026-07-17** (`research/e5-orchestrator-gate-2026-07-17.md`). Result: orchestrator injects and the **cross-context bus works LIVE** (9 relay-in/response-out round trips from the real account.proton.me onboarding page), but **"missing permissions" persists**. Root cause sharpened: the account app's presence-check runs in the page **MAIN world via `externally_connectable`** (`chrome.runtime.sendMessage(extId)`), which S2 keeps empty. **Corrects the E6 checkpoint's stated blocker** — the real remaining gap is a narrow MAIN-world externally_connectable bridge → `onMessageExternal` (an E6 concern, not general injection)
 
 ## 2. Unify the isolated-world shim (design Decision 1)
 
@@ -28,19 +28,19 @@
 
 ## 4. orchestrator boot audit (content-injection spec)
 
-- [ ] 4.1 Headless harness: load a test page with the full injection set, boot `orchestrator.js`, capture its audit log + errors
-- [ ] 4.2 Iterate the shim surface until `orchestrator.js` boots with zero unhandled TypeErrors; write `research/orchestrator-audit-<date>.md` triaging every unmodelled API (Tier 1/2/3)
-- [ ] 4.3 **Ports decision (Decision 4b):** if the audit shows `runtime.connect`/`onConnect`, implement cross-context ports on the E6 bus; else leave deferred and note
+- [x] 4.1 Headless harness (`OrchestratorBootAuditTests`): full injection set on a synthetic login page, host live, isolated-world `__audit` instrumentation + execution probes. Confirms the FR-9 set installs (5 scripts), the shim is present, MAIN stays clean, and the audit plumbing works
+- [x] 4.2 `research/orchestrator-audit-2026-07-17.md` written. **Finding:** orchestrator does NOT complete boot in a *windowless* WKWebView (offscreen render/idle loop absent — page-side analogue of the E3 throttle); the **authoritative** boot evidence is the live gate (orchestrator boots clean, 9 bus round-trips, modelled shim only). No unmodelled-API gap identified — the real blocker is E6's externally_connectable bridge, not an orchestrator API
+- [x] 4.3 **Ports decision (Decision 4b): DEFER.** Static scan: `orchestrator.js` initiates no ports; `background.js`'s 3 `onConnect` handlers serve other contexts (dropdown/notification iframes), not orchestrator boot. Cross-context ports stay off the E6 bus until a concrete flow needs them
 
 ## 5. Frame registry (frame-registry spec)
 
-- [ ] 5.1 `FrameRegistry` from `WKNavigationDelegate` + `WKFrameInfo`: main frame id 0, stable subframe ids; back `webNavigation.getFrame`/`getAllFrames`
-- [ ] 5.2 `runtime.getFrameId` resolves the calling `WKScriptMessage.frameInfo` to a frame id
-- [ ] 5.3 XCTests: `getAllFrames` on a nested-iframe page; `getFrame` by id (+ unknown→null); `getFrameId` from main vs subframe
+- [x] 5.1 `FrameRegistry` (`Muninn/Shim/FrameRegistry.swift`): main frame id 0 (parent -1), stable subframe ids keyed on `(isMainFrame, securityOrigin, url)` (WKFrameInfo has no public stable id on the 26.2 SDK). Backs `webNavigation.getAllFrames`/`getFrame` via `MessageBroker.webNavigationCall`; `resetSubframes()` on main-frame `didStartProvisionalNavigation`. Pure core (`resolve(isMain:url:originKey:parentId:)`) is unit-testable without a `WKFrameInfo`
+- [x] 5.2 `runtime.getFrameId` resolves the caller's frame: the isolated bridge resolves `message.frameInfo` → id and answers `runtime.__resolveFrameId`; `content-polyfill.js` caches it on boot and `getFrameId()` returns it (Safari current-frame form; element-arg is post-MVP, Spike B risk #2)
+- [x] 5.3 `FrameRegistryTests` (6, green): `getAllFrames` nested; `getFrame` by id + unknown→null; stable ids across re-resolve; reset keeps main; `getFrameId` main-frame → 0 end-to-end; srcdoc subframe gets a distinct positive id
 
 ## 6. Verify, review & ship
 
-- [~] 6.1 XCTest: orchestrator boots clean; **S2 MAIN-world isolation still holds** with the full injection set (no `chrome`/`browser`/broker handler in MAIN world; `webauthn.js` uses no `browser.*`) — _[isolation half proven: 4 ForkBridgeIsolationTests green with orchestrator+webauthn injected; "orchestrator boots clean" is the task-4 audit]_
-- [ ] 6.2 Full suite green from a pristine clone
-- [ ] 6.3 Refute-oriented review (MAIN-world leak with the bigger surface; frame-id correctness; port opacity if added; injection ordering)
-- [ ] 6.4 Ship via git-ship (PR-gated); update `CLAUDE.md` (E5 done → re-attempt the E6 login gate next). If the task-1 experiment already cleared "missing permissions," note the E6 gate is ready to finish
+- [x] 6.1 XCTest: **S2 MAIN-world isolation still holds** with the full injection set — `OrchestratorBootAuditTests` asserts MAIN `chrome` is undefined under bootstrap+content-polyfill+orchestrator+webauthn; 4 `ForkBridgeIsolationTests` green. "orchestrator boots clean" is validated by the live gate (task 4 finding — headless boot is offscreen-limited)
+- [x] 6.2 Full suite green: **30 XCTests, 0 failures** (`xcodebuild test -scheme Muninn`)
+- [x] 6.3 Refute-oriented review (swiftui-reviewer) done — 4 findings, all fixed + re-verified: (1) reset moved to `didCommit` (a cancelled nav no longer wipes live subframes); (2) `getFrameId` uses `window.top===window` so a subframe returns -1 (pending), never a false 0; (3) identical-URL subframe collision documented + codified in a test; (4) dead `webNavigation` stub case removed. 31 tests green
+- [~] 6.4 Ship via git-ship (PR-gated); update `CLAUDE.md`. **Live-gate result (task 1) reframes E6:** "missing permissions" is the MAIN-world externally_connectable check, not orchestrator — E6 needs the externally_connectable bridge next
