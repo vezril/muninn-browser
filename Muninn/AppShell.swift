@@ -64,6 +64,15 @@ final class AppShell: NSObject {
                 let k = e["kind"] as? String ?? "?"
                 if ["workerError", "workerRejection"].contains(k) { gate("E6-GATE \(k)") }
                 else if k == "host:backgroundLoaded" { gate("E6-GATE background-loaded") }
+                else if k == "console", let text = e["text"] as? String {
+                    // Ground rule 1: surface ONLY specific, non-sensitive fork/permission
+                    // diagnostic markers (never tokens/session) — log just the matched marker.
+                    let markers = ["Invalid fork state", "missing permissions", "consumeFork",
+                                   "fork state", "InactiveSession", "pullFork"]
+                    if let hit = markers.first(where: { text.localizedCaseInsensitiveContains($0) }) {
+                        gate("E6-GATE bg-marker: \(hit)")
+                    }
+                }
             }
         }
 
