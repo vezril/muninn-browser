@@ -245,6 +245,65 @@
     }
   });
 
+  // --- native fetch proxy (change native-fetch-proxy) ----------------------
+  // The worker's origin is muninn-ext://<id>, so cross-origin fetch to the Proton
+  // API is CORS-blocked. Route http(s) requests to allowlisted (*.proton.me) hosts
+  // through native URLSession (no CORS); everything else uses the platform fetch
+  // unchanged (own resources, blob:, data:). Installed at import time — BEFORE the
+  // boot script does importScripts("background.js") — so Proton sees the override.
+  (function () {
+    var nativeFetch = self.fetch ? self.fetch.bind(self) : null;
+    function allowed(u) {
+      try {
+        var url = new URL(u, (self.location && self.location.href) || undefined);
+        if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+        var h = url.hostname.toLowerCase();
+        return h === "proton.me" || h.endsWith(".proton.me");
+      } catch (_) { return false; }
+    }
+    function b64FromBuf(buf) {
+      var bytes = new Uint8Array(buf), bin = "";
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return self.btoa(bin);
+    }
+    function bufFromB64(b64) {
+      var bin = self.atob(b64 || ""), len = bin.length, bytes = new Uint8Array(len);
+      for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+    self.fetch = function (input, init) {
+      var url = (typeof input === "string") ? input : (input && input.url);
+      if (!url || !allowed(url)) return nativeFetch ? nativeFetch(input, init) : Promise.reject(new TypeError("no fetch"));
+      var req = (typeof input === "object" && input) ? input : null;
+      var method = (init && init.method) || (req && req.method) || "GET";
+      var headers = {};
+      var hsrc = (init && init.headers) || (req && req.headers);
+      if (hsrc) {
+        if (typeof hsrc.forEach === "function") hsrc.forEach(function (v, k) { headers[k] = v; });
+        else if (Array.isArray(hsrc)) hsrc.forEach(function (p) { headers[p[0]] = p[1]; });
+        else Object.keys(hsrc).forEach(function (k) { headers[k] = hsrc[k]; });
+      }
+      function send(bodyBase64) {
+        var spec = { url: url, method: method, headers: headers };
+        if (bodyBase64) spec.bodyBase64 = bodyBase64;
+        return callNative("__fetch", "request", [spec]).then(function (r) {
+          if (!r || r.__error) throw new TypeError("Failed to fetch" + (r && r.__error ? " (" + r.__error + ")" : ""));
+          var h = new Headers();
+          (r.headers || []).forEach(function (p) { try { h.append(p[0], p[1]); } catch (_) {} });
+          return new Response(bufFromB64(r.bodyBase64), { status: r.status, statusText: r.statusText, headers: h });
+        });
+      }
+      var body = (init && init.body);
+      if (body == null) return send(null);
+      if (typeof body === "string") return send(self.btoa(unescape(encodeURIComponent(body))));
+      if (body instanceof ArrayBuffer) return send(b64FromBuf(body));
+      if (body && body.buffer instanceof ArrayBuffer) return send(b64FromBuf(body.buffer));
+      // FormData/Blob/ReadableStream bodies + AbortSignal cancel are deferred (MVP is
+      // the fork-consume GET). Fall back to native (honest CORS failure) for those.
+      return nativeFetch ? nativeFetch(input, init) : Promise.reject(new TypeError("unsupported body"));
+    };
+  })();
+
   // --- init (called by boot script once page sends init) -------------------
   self.__shimInit = function (initData) {
     CANONICAL_ID = initData.id;

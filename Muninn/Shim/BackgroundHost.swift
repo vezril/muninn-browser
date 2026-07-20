@@ -156,6 +156,11 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         guard let host, let env = message.body as? [String: Any] else {
             return (nil, "bad envelope")
         }
+        // Native fetch proxy (host-only route — the page's IsolatedBridge has no such
+        // branch, so content worlds can't reach it). Async: awaits URLSession.
+        if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "request" {
+            return (await host.broker.performFetch(env), nil)
+        }
         do { return (try host.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
     }

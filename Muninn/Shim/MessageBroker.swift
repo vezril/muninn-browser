@@ -20,6 +20,11 @@ final class MessageBroker: NSObject {
     /// page or the host worker (shared broker, single-tab MVP).
     let frameRegistry = FrameRegistry()
 
+    /// Native fetch proxy (change `native-fetch-proxy`) — gives the extension worker
+    /// CORS-bypassed, `*.proton.me`-scoped network access. Reached ONLY via the host's
+    /// `broker` handler (`performFetch`), never a page content world.
+    private let fetchProxy = NativeFetchProxy()
+
     /// Audit sink — every unmodelled access + host lifecycle event lands here.
     private(set) var auditLog: [[String: Any]] = []
     var onAudit: (([String: Any]) -> Void)?
@@ -319,6 +324,26 @@ final class MessageBroker: NSObject {
         }
         onCrossContextRelay?("response-out", senderHost) // background.js handled it
         return box.value
+    }
+
+    /// `__fetch/request` from the background worker → native `URLSession` proxy
+    /// (CORS-bypassed). Parses the spec into Sendable primitives on the main actor,
+    /// awaits the proxy actor, and marshals the JS reply. Allowlist + locality are the
+    /// SSRF boundary (see `NativeFetchProxy`; wired only in `BackgroundHost.HostBridge`).
+    func performFetch(_ env: [String: Any]) async -> Any? {
+        let spec = (env["args"] as? [Any])?.first as? [String: Any] ?? [:]
+        guard let url = spec["url"] as? String else { return ["__error": "bad spec"] }
+        let method = spec["method"] as? String ?? "GET"
+        var headers: [String: String] = [:]
+        if let h = spec["headers"] as? [String: Any] { for (k, v) in h { headers[k] = String(describing: v) } }
+        let bodyBase64 = spec["bodyBase64"] as? String
+
+        let r = await fetchProxy.perform(url: url, method: method, headers: headers, bodyBase64: bodyBase64)
+        if let error = r.error { return ["__error": error] }
+        return [
+            "status": r.status, "statusText": r.statusText, "headers": r.headers,
+            "bodyBase64": r.bodyBase64, "finalURL": r.finalURL, "redirected": r.redirected,
+        ]
     }
 
     /// Called when a worker's `sendResponse` comes back through the host relay.
