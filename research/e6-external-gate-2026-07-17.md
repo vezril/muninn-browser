@@ -133,3 +133,43 @@ the Proton API with a few headers + `credentials:"include"` cookie handling.
 NOT D4-the-decision-to-abandon: engine, boot, injection, bus, frame registry,
 externally_connectable detection, and now the fork message delivery ALL work live. The
 remaining work is the session handoff topology.
+
+---
+
+## DEFINITIVE ROOT CAUSE (2026-07-20, gate 9 + static) — login needs the popup's fork-initiation
+
+Gate 9 (safe fetch-entry probe): the fork consume makes ZERO worker network calls and
+`fork → RESPONDED` with a CAUGHT error. Static trace of the consume handler `_`:
+
+```js
+_ = async ({service:e}, {payload:a}, {tab:r}) => {
+  let i = `f${a.state}`;
+  let s = await e.storage.session.getItem(i).catch(()=>null);   // read stored fork state
+  if (!a.keyPassword) throw Error("Invalid `ExtensionForkPayload`");
+  await I.consumeFork({mode:"extension", tabId:r?.id, localState:s, ...a}, `${SSO_URL}/api`)
+  // consumeFork → throws cX("Invalid fork state") unless (localState!==null && key) && selector && state
+}
+```
+
+The `f<state>` **write** is NOT in background.js — it's in **`popup.js`** (also `dropdown.js`,
+`settings.js`):
+
+```js
+await storage.session.set({[`f${state}`]: JSON.stringify(forkState)});  // popup.js fork-init
+window.location.replace(forkURL);
+```
+
+So the auth-fork is **initiated by the popup's "Sign in"**: the popup generates the fork
+state/key, stores it in `storage.session["f"+state]`, and navigates to the fork URL. The
+account login then forks and sends the extension the `fork` message; the consume reads
+`f<state>` back. **Our `onInstalled → tabs.create(onboarding)` flow never runs that
+fork-init**, so `f<state>` is absent → "Invalid fork state" → "Unknown error".
+
+**Conclusion:** login cannot complete via the onboarding page alone. It requires the
+extension to INITIATE the fork (popup behavior). This couples E6's login completion to
+**E7 (popup)** — or to a minimal fork-init shim that replicates popup.js's
+`storage.session.set({f<state>}) + open fork URL`.
+
+**NOT abandon-D4** — detection, bus, injection, and the fetch proxy all work; the gap is
+that nothing initiates the fork. The onboarding path was a detour; the real sign-in is
+popup-driven (which is also the daily-driver UX).
