@@ -92,10 +92,32 @@ final class AppShell: NSObject {
     func present() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        // E7 sign-in path: the auth-fork is initiated by the popup, so open it (the fork
-        // trigger). Gate-controlled for now; becomes a real toolbar button later.
-        if ProcessInfo.processInfo.environment["MUNINN_POPUP"] != nil { openPopup() }
+        // Sign-in paths (gate-controlled). MUNINN_FORKINIT: the minimal fork-init shim
+        // (retire Risk 1 without the full popup UI). MUNINN_POPUP: the real popup.
+        if ProcessInfo.processInfo.environment["MUNINN_FORKINIT"] != nil { forkInit() }
+        else if ProcessInfo.processInfo.environment["MUNINN_POPUP"] != nil { openPopup() }
         else { navigate(to: "https://account.proton.me") }
+    }
+
+    /// Minimal auth-fork initiation (what Proton's `popup.js` "Sign in" does, hand-rolled):
+    /// generate a random `state` nonce, store the fork `localState` under
+    /// `storage.session["f"+state]` (the SAME `ExtensionStorage` background.js reads on
+    /// consume), and navigate to the `/authorize` fork endpoint. The account login then
+    /// forks and messages the extension; consume finds `f<state>` → `pullFork` (via the
+    /// native fetch proxy). No crypto key in the URL — the state is a plain nonce and the
+    /// key/keyPassword come from the account app's fork message.
+    func forkInit() {
+        let bytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let nonce = Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        // Value is the JSON STRING background parses back (JSON.parse(localState)); "{}" ⇒
+        // a non-null localState, which is all the "Invalid fork state" check requires.
+        broker.storage.set(.session, ["f\(nonce)": "{}"])
+        let url = "https://account.proton.me/authorize?app=proton-pass-extension"
+            + "&state=\(nonce)&independent=0&prompt=login&promptBypass=sso&promptType=offline&pt=offline&t=3"
+        navigate(to: url)
     }
 
     /// Open the Pass popup (renders Proton's popup.html/popup.js); its "Sign in" runs the
