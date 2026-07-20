@@ -9,7 +9,7 @@
 
 - [ ] 2.1 Popup `runtime.sendMessage` → `background.js` `onMessage` (reuse `routeSendMessageToHost` with a `popup` sender) and responses back. `storage.*` shares the broker's `ExtensionStorage` (so `storage.session["f"+state]` round-trips to background's consume).
 - [ ] 2.2 `tabs.create`/`windows.create`/`window.location` for the fork URL drive the shell tab (reuse `broker.onOpenURL`).
-- [ ] 2.3 **Ports (if needed):** determine whether `popup.js` needs a live `runtime.connect` port to `background.js` to render/sign-in. If yes, implement minimal cross-context ports (popup↔host) on the bus; if no, keep the inert stub and note it.
+- [ ] 2.3 **Ports — CONFIRMED REQUIRED (gate 2026-07-20):** the popup renders BLANK because `popup.js` does `runtime.connect(id,{name})` and drives its UI over the port (`port.onMessage`/`onDisconnect`/`postMessage`); `background.js` `onConnect` stores the port + broadcasts state. Our inert port stub delivers nothing → blank. **Implement minimal cross-context ports (popup↔native↔host worker):** real portId, bidirectional `postMessage`, `onMessage`/`onDisconnect` delivery, keyed port registry in the broker. This is the last piece before the popup renders + Sign in works.
 
 ## 3. Present the popup
 
