@@ -272,6 +272,11 @@ final class MessageBroker: NSObject {
     /// completion). Set only in the gate run.
     var onExternalRelay: ((_ type: String, _ senderHost: String, _ responded: Bool) -> Void)?
 
+    /// E6 gate observation for the native fetch proxy: HTTP method + host + status ONLY
+    /// (never path — the fork selector lives there — query, headers, or body). Lets the
+    /// gate see the fork request sequence and which one fails. Set only in the gate run.
+    var onFetchProbe: ((_ method: String, _ host: String, _ status: Int, _ errored: Bool) -> Void)?
+
     func routeSendMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
         // Internal (isolated content script) sender: carries the canonical id.
         let sender: [String: Any] = [
@@ -339,6 +344,8 @@ final class MessageBroker: NSObject {
         let bodyBase64 = spec["bodyBase64"] as? String
 
         let r = await fetchProxy.perform(url: url, method: method, headers: headers, bodyBase64: bodyBase64)
+        // Gate probe: method + host + status only (never path/query/headers/body).
+        onFetchProbe?(method, URL(string: url)?.host ?? "?", r.status, r.error != nil)
         if let error = r.error { return ["__error": error] }
         return [
             "status": r.status, "statusText": r.statusText, "headers": r.headers,

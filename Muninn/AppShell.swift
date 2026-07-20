@@ -55,6 +55,8 @@ final class AppShell: NSObject {
             broker.onCrossContextRelay = { direction, senderHost in gate("E6-GATE \(direction) from \(senderHost)") }
             broker.onExternalRelay = { type, senderHost, responded in
                 gate("E6-GATE ext-msg type=\(type) from \(senderHost) " + (responded ? "→ RESPONDED" : "→ sent")) }
+            broker.onFetchProbe = { method, host, status, errored in
+                gate("E6-GATE fetch \(method) \(host) → " + (errored ? "ERR" : "\(status)")) }
             broker.onAudit = { entry in
                 if (entry["kind"] as? String) == "open-url" { gate("E6-GATE open-url \(entry["member"] ?? "?") -> \(entry["url"] ?? "?")") }
             }
