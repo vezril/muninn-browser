@@ -14,6 +14,7 @@ final class AppShell: NSObject {
     let broker: MessageBroker
     let host: BackgroundHost
     let page: InjectionCoordinator
+    private var popup: PopupHost?
 
     private let addressField = NSTextField()
     private let backButton = NSButton()
@@ -91,8 +92,20 @@ final class AppShell: NSObject {
     func present() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        // Start on the account page so the auth-fork is reachable immediately.
-        navigate(to: "https://account.proton.me")
+        // E7 sign-in path: the auth-fork is initiated by the popup, so open it (the fork
+        // trigger). Gate-controlled for now; becomes a real toolbar button later.
+        if ProcessInfo.processInfo.environment["MUNINN_POPUP"] != nil { openPopup() }
+        else { navigate(to: "https://account.proton.me") }
+    }
+
+    /// Open the Pass popup (renders Proton's popup.html/popup.js); its "Sign in" runs the
+    /// real fork-initiation. The fork URL it opens is routed to the shell tab via
+    /// `broker.onOpenURL` (already wired in init).
+    func openPopup() {
+        let p = PopupHost(broker: broker)
+        self.popup = p
+        p.load()
+        p.present()
     }
 
     // MARK: - UI
