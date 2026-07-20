@@ -9,7 +9,7 @@
 
 - [ ] 2.1 Popup `runtime.sendMessage` → `background.js` `onMessage` (reuse `routeSendMessageToHost` with a `popup` sender) and responses back. `storage.*` shares the broker's `ExtensionStorage` (so `storage.session["f"+state]` round-trips to background's consume).
 - [ ] 2.2 `tabs.create`/`windows.create`/`window.location` for the fork URL drive the shell tab (reuse `broker.onOpenURL`).
-- [ ] 2.3 **Ports — CONFIRMED REQUIRED (gate 2026-07-20):** the popup renders BLANK because `popup.js` does `runtime.connect(id,{name})` and drives its UI over the port (`port.onMessage`/`onDisconnect`/`postMessage`); `background.js` `onConnect` stores the port + broadcasts state. Our inert port stub delivers nothing → blank. **Implement minimal cross-context ports (popup↔native↔host worker):** real portId, bidirectional `postMessage`, `onMessage`/`onDisconnect` delivery, keyed port registry in the broker. This is the last piece before the popup renders + Sign in works.
+- [x] 2.3 **Cross-context ports — DONE.** popup/page `runtime.connect(id,{name})` → real port to the host worker's `onConnect`; bidirectional `postMessage`, `onMessage`/`onDisconnect`; keyed port registry in `MessageBroker` (`portConnect`/`portMessageFromClient`/`portMessageFromHost`/`portDisconnect`); worker `shim-polyfill` builds the port on inbound `connect`; relays via `background-host-page.js` + `BackgroundHost`. `CrossContextPortTests` green (round-trip both ways).
 
 ## 3. Present the popup
 

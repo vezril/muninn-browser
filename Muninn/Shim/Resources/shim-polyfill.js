@@ -238,10 +238,23 @@
       } else {
         fireEvent(d.key, d.args || []);
       }
+    } else if (d.__shim === "connect") {
+      // A client (popup/page) opened a port to us → build the worker-side Port and
+      // fire runtime.onConnect (background.js stores it and broadcasts state over it).
+      var pid = d.portId, onMsg = [], onDisc = [], open = true;
+      var stub = {
+        name: d.name || "", sender: d.sender || {},
+        onMessage: { addListener: function (f) { onMsg.push(f); }, removeListener: function (f) { var i = onMsg.indexOf(f); if (i >= 0) onMsg.splice(i, 1); } },
+        onDisconnect: { addListener: function (f) { onDisc.push(f); }, removeListener: function (f) { var i = onDisc.indexOf(f); if (i >= 0) onDisc.splice(i, 1); } },
+        postMessage: function (m) { if (open) self.postMessage({ __shim: "portPost", portId: pid, message: m }); },
+        disconnect: function () { if (!open) return; open = false; delete ports[pid]; self.postMessage({ __shim: "portDisconnectHost", portId: pid }); },
+      };
+      ports[pid] = { onMessage: onMsg, onDisconnect: onDisc, stub: stub, close: function () { open = false; } };
+      fireEvent("runtime.onConnect", [stub]);
     } else if (d.__shim === "portMessage") {
       var pt = ports[d.portId]; if (pt) pt.onMessage.forEach(function (f) { try { f(d.message, pt.stub); } catch (_) {} });
     } else if (d.__shim === "portDisconnect") {
-      var pd = ports[d.portId]; if (pd) { pd.onDisconnect.forEach(function (f) { try { f(pd.stub); } catch (_) {} }); delete ports[d.portId]; }
+      var pd = ports[d.portId]; if (pd) { if (pd.close) pd.close(); pd.onDisconnect.forEach(function (f) { try { f(pd.stub); } catch (_) {} }); delete ports[d.portId]; }
     }
   });
 

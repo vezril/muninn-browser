@@ -358,6 +358,44 @@ final class MessageBroker: NSObject {
         if let cont = pending.removeValue(forKey: id) { cont.resume(returning: AnyBox(value: result ?? NSNull())) }
     }
 
+    // MARK: - cross-context ports (E7 — popup ⇄ host worker)
+
+    /// portId → the CLIENT context ("popup"/"page"); the other end is always the host
+    /// worker (`background.js` `onConnect`). The popup drives its whole UI over this port.
+    private var portClient: [String: String] = [:]
+
+    /// `runtime.connect(id,{name})` from a client (popup/page) → open a port to the host
+    /// worker's `onConnect`.
+    func portConnect(portId: String, name: String, from clientContext: String, senderURL: String?) {
+        guard contexts["host"] != nil else { return }
+        portClient[portId] = clientContext
+        let sender: [String: Any] = ["id": PassBundle.canonicalID, "url": senderURL ?? ""]
+        deliver(["__shim": "connect", "portId": portId, "name": name, "sender": sender], to: "host")
+    }
+
+    /// A client port `postMessage` → the host worker's port `onMessage`.
+    func portMessageFromClient(portId: String, message: Any?) {
+        guard portClient[portId] != nil else { return }
+        deliver(["__shim": "portMessage", "portId": portId, "message": message ?? NSNull()], to: "host")
+    }
+
+    /// A host worker port `postMessage` → the client port's `onMessage`.
+    func portMessageFromHost(portId: String, message: Any?) {
+        guard let client = portClient[portId] else { return }
+        deliver(["__shim": "push", "key": "__port.message", "portId": portId,
+                 "message": message ?? NSNull(), "args": []], to: client)
+    }
+
+    /// Port teardown from either end → notify the other and forget it.
+    func portDisconnect(portId: String, origin: String) {
+        guard let client = portClient.removeValue(forKey: portId) else { return }
+        if origin == "host" {
+            deliver(["__shim": "push", "key": "__port.disconnect", "portId": portId, "args": []], to: client)
+        } else {
+            deliver(["__shim": "portDisconnect", "portId": portId], to: "host")
+        }
+    }
+
     /// Fire the extension lifecycle event so background.js runs its install /
     /// startup hooks (the install hook drives the auth-fork onboarding URL).
     func fireExtensionLifecycle(firstRun: Bool) {

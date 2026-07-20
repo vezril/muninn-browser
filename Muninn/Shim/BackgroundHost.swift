@@ -190,6 +190,11 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
             if let id = d["id"] as? String { host.broker.resolveResponse(id: id, result: d["result"]) }
         case "workerError", "workerRejection":
             host.note(kind: kind, info: d)
+        case "portPost":
+            // A worker-side port.postMessage → route to the client port (popup/page).
+            if let portId = d["portId"] as? String { host.broker.portMessageFromHost(portId: portId, message: d["message"]) }
+        case "portDisconnectHost":
+            if let portId = d["portId"] as? String { host.broker.portDisconnect(portId: portId, origin: "host") }
         case "audit":
             if let ns = d["ns"] as? String, let member = d["member"] as? String {
                 host.broker.record(ns: ns, member: member,

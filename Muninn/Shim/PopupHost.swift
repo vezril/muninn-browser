@@ -125,6 +125,19 @@ private final class PopupBridge: NSObject, WKScriptMessageHandlerWithReply {
             let result = await host.broker.routeSendMessageToHost(args.first, senderURL: host.webView?.url?.absoluteString)
             return (result, nil)
         }
+        // Cross-context ports (popup ⇄ background) — the popup drives its UI over these.
+        if ns == "__port" {
+            let m = env["method"] as? String
+            let portId = args.first as? String ?? ""
+            switch m {
+            case "connect": host.broker.portConnect(portId: portId, name: (args.count > 1 ? args[1] as? String : nil) ?? "",
+                                                     from: "popup", senderURL: host.webView?.url?.absoluteString)
+            case "message": host.broker.portMessageFromClient(portId: portId, message: args.count > 1 ? args[1] : nil)
+            case "disconnect": host.broker.portDisconnect(portId: portId, origin: "client")
+            default: break
+            }
+            return (NSNull(), nil)
+        }
         do { return (try host.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
     }

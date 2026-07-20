@@ -243,6 +243,19 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
                 args.first, senderURL: message.frameInfo.request.url?.absoluteString)
             return (result, nil)
         }
+        // Cross-context ports (page content script ⇄ background), same channel as the popup.
+        if ns == "__port" {
+            let m = env["method"] as? String
+            let portId = args.first as? String ?? ""
+            switch m {
+            case "connect": injector.broker.portConnect(portId: portId, name: (args.count > 1 ? args[1] as? String : nil) ?? "",
+                                                         from: "page", senderURL: injector.webView?.url?.absoluteString)
+            case "message": injector.broker.portMessageFromClient(portId: portId, message: args.count > 1 ? args[1] : nil)
+            case "disconnect": injector.broker.portDisconnect(portId: portId, origin: "client")
+            default: break
+            }
+            return (NSNull(), nil)
+        }
         // Everything else is a synchronous self-service Tier-1 call.
         do { return (try injector.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
