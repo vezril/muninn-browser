@@ -106,18 +106,29 @@ handler in `background.js` ran. But the UI then showed **"Unable to Sign In to P
 Pass. Unknown error occurred."** So we are now at the **session-fork completion** step
 (Spike B Risk 1's core), past detection.
 
-**Leading hypothesis: Decision 4 (cookie/store topology).** The background host uses a
-dedicated `WKWebsiteDataStore` (required for the E3 timer fix / per-process throttle
-latch). The auth-fork completes the session by pulling/decrypting the forked session,
-which likely needs cookies/session shared with the `account.proton.me` tab — but the
-dedicated store isolates the host worker's cookies from the page tab. This is the exact
-open architectural unknown flagged in Decision 4.
+**ROOT CAUSE CONFIRMED (2026-07-18) — it is CORS, NOT Decision 4.** The fork handler
+consumes the fork via `fetch("https://pass.proton.me/api/...", {credentials:"include"})`
+(a GET on `.../sessions/forks/{selector}`; `API_URL = "https://pass.proton.me/api"`). The
+background worker's origin is `muninn-ext://<id>` (custom scheme), so this cross-origin
+fetch is **CORS-blocked**. Verified headlessly (`ForkCorsProbeTests`, net-gated): the same
+fetch fails with **`TypeError: Load failed`** — WebKit's CORS-blocked signature. In a real
+browser the extension's `host_permissions` (`*://*/*`) grant CORS-bypass network
+privilege; a WKWebView custom-scheme origin gets none. The earlier Decision-4 (cookie
+store) hypothesis is **superseded** — the request never completes the CORS preflight/check,
+so cookies aren't even reached.
 
-**Next session:** investigate the fork handler's requirements (what network/session
-state it needs), then resolve the Decision 4 trade — e.g. share the data store between
-host and page (and re-verify the timer fix still holds under a shared store), or bridge
-the session differently. Ground rule 1 throughout: never capture the fork payload,
-session tokens, or credentials — the gate log stays type-only.
+**Fix: a native fetch proxy.** The extension needs its `host_permissions`-scoped network
+requests routed through native (URLSession, no CORS), matching real-browser extension
+privilege. Design in progress (webkit-developer agent): override the worker's `fetch` to
+route `*.proton.me` requests through the broker → native URLSession → response, scoped to
+manifest host_permissions (the page must NOT get an open proxy). This also side-steps
+Decision 4: cookies move to native URLSession storage for the fork consume. Ground rule 1
+throughout: never capture the fork payload, selector, session tokens, or credentials — the
+gate log and probe stay type-only / unauthenticated.
+
+**Likely its own change/epic** (native extension networking; relates to ADR-002 proxy
+routing / E8). The minimal viable slice for the walking skeleton: `GET` JSON requests to
+the Proton API with a few headers + `credentials:"include"` cookie handling.
 
 NOT D4-the-decision-to-abandon: engine, boot, injection, bus, frame registry,
 externally_connectable detection, and now the fork message delivery ALL work live. The
