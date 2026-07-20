@@ -22,6 +22,20 @@
 - [x] 4.3 Locality: a page/isolated-world `__fetch` call is rejected, not proxied (`testProxyNotReachableFromPage`).
 - [x] 4.4 Full suite green — **40 tests, 0 failures** (2 net probes skipped).
 
+## 4b. XMLHttpRequest proxy — REQUIRED (not deferred): Proton's API client is XHR-based
+
+> **Gate 8 finding (2026-07-20):** with the fetch proxy live, the fork message RESPONDS
+> but login still fails "Unknown error" AND the fetch probe logs **zero** proxied
+> requests — because `background.js`'s API client uses **`XMLHttpRequest`** (confirmed:
+> `new XMLHttpRequest`, 10 refs), not `fetch`. XHR requests to `account.proton.me/api`
+> (the fork consume is `GET SSO_URL/api/auth/v4/sessions/forks/{selector}`) are still
+> CORS-blocked. The fetch override was necessary but not sufficient — the auth-fork
+> critical path is XHR. This was flagged "confirm" in the design; now confirmed REQUIRED.
+
+- [ ] 4b.1 Override `XMLHttpRequest` in the worker bootstrap (same place as `fetch`): route allowlisted `*.proton.me` requests through the SAME native `performFetch`; non-allowlisted → the platform XHR. Reuse `NativeFetchProxy`.
+- [ ] 4b.2 Implement the XHR surface the client uses: `open(method,url)`, `setRequestHeader`, `withCredentials`, `send(body)`, `onreadystatechange`/`readyState`/`status`/`statusText`, `responseText`/`response`/`responseType`, `getAllResponseHeaders`/`getResponseHeader`, `onerror`/`onload`, `abort`. (Audit the exact subset Proton's client touches — grep `.responseType`/`.response`/handlers — and implement just that.)
+- [ ] 4b.3 Tests: worker XHR to an allowlisted host round-trips (net-gated); non-allowlisted refused; locality holds.
+
 ## 5. Verify, review & ship
 
 - [ ] 5.1 Refute-oriented review (SSRF boundary: locality + allowlist + redirect containment; no header injection; cookie-jar isolation; Swift 6 actor correctness).
