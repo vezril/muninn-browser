@@ -22,19 +22,21 @@
 - [x] 4.3 Locality: a page/isolated-world `__fetch` call is rejected, not proxied (`testProxyNotReachableFromPage`).
 - [x] 4.4 Full suite green — **40 tests, 0 failures** (2 net probes skipped).
 
-## 4b. XMLHttpRequest proxy — REQUIRED (not deferred): Proton's API client is XHR-based
+## 4b. Diagnose why the fork consume never reaches the worker fetch proxy
 
-> **Gate 8 finding (2026-07-20):** with the fetch proxy live, the fork message RESPONDS
-> but login still fails "Unknown error" AND the fetch probe logs **zero** proxied
-> requests — because `background.js`'s API client uses **`XMLHttpRequest`** (confirmed:
-> `new XMLHttpRequest`, 10 refs), not `fetch`. XHR requests to `account.proton.me/api`
-> (the fork consume is `GET SSO_URL/api/auth/v4/sessions/forks/{selector}`) are still
-> CORS-blocked. The fetch override was necessary but not sufficient — the auth-fork
-> critical path is XHR. This was flagged "confirm" in the design; now confirmed REQUIRED.
+> **Gate 8 (2026-07-20) — corrected:** with the fetch proxy live, `fork → RESPONDED`
+> but login still "Unknown error", AND the fetch probe logged **zero** proxied requests
+> and **zero** worker errors. My first read ("it's XHR") was WRONG: only **Sentry** uses
+> `XMLHttpRequest`; Proton's API client is **`fetch`-based** (`{mode:"cors",
+> credentials:"include", redirect:"follow", signal}`). So the fork consume never called
+> the worker's overridden `fetch`. Either (A) the fork handler fails BEFORE the network
+> call (caught → responds "error"), or (B) the consume runs in the **account tab**
+> (fork.js content script, same-origin to account.proton.me → no CORS, no worker fetch),
+> and the failure is elsewhere.
 
-- [ ] 4b.1 Override `XMLHttpRequest` in the worker bootstrap (same place as `fetch`): route allowlisted `*.proton.me` requests through the SAME native `performFetch`; non-allowlisted → the platform XHR. Reuse `NativeFetchProxy`.
-- [ ] 4b.2 Implement the XHR surface the client uses: `open(method,url)`, `setRequestHeader`, `withCredentials`, `send(body)`, `onreadystatechange`/`readyState`/`status`/`statusText`, `responseText`/`response`/`responseType`, `getAllResponseHeaders`/`getResponseHeader`, `onerror`/`onload`, `abort`. (Audit the exact subset Proton's client touches — grep `.responseType`/`.response`/handlers — and implement just that.)
-- [ ] 4b.3 Tests: worker XHR to an allowlisted host round-trips (net-gated); non-allowlisted refused; locality holds.
+- [x] 4b.1 Added a safe **fetch-entry probe** (host only, before the allowlist decision) so the next gate shows whether the worker calls `fetch` during the fork and to which host — distinguishing (A) from a routing bug.
+- [ ] 4b.2 Next gate OR live-inspect the background worker console (inspectable in gate mode) to read the fork handler's actual caught error. Ground rule 1: host/method/status markers only; background console `warn/error` may carry sensitive text — do NOT blanket-capture.
+- [ ] 4b.3 Fix per the finding (could be: a worker fetch that isn't being routed; a pre-fetch failure in the handler; or the consume being an account-tab same-origin call that fails for a different reason).
 
 ## 5. Verify, review & ship
 

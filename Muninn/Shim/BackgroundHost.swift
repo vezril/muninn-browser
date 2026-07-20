@@ -161,6 +161,12 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "request" {
             return (await host.broker.performFetch(env), nil)
         }
+        // Safe entry probe: the worker called fetch (host only, before routing).
+        if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "probe" {
+            let h = ((env["args"] as? [Any])?.first as? String) ?? "?"
+            host.broker.onFetchProbe?("ENTRY", h, 0, false)
+            return (NSNull(), nil)
+        }
         do { return (try host.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
     }

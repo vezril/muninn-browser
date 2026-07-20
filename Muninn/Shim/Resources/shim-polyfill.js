@@ -273,6 +273,12 @@
     }
     self.fetch = function (input, init) {
       var url = (typeof input === "string") ? input : (input && input.url);
+      // Safe entry probe (host only) — lets the E6 gate see whether the worker calls
+      // fetch during the fork, and to which host, before the allowlist decision.
+      try {
+        var eh = new URL(url, (self.location && self.location.href) || undefined).hostname;
+        callNative("__fetch", "probe", [eh]).then(function () {}, function () {});
+      } catch (_) {}
       if (!url || !allowed(url)) return nativeFetch ? nativeFetch(input, init) : Promise.reject(new TypeError("no fetch"));
       var req = (typeof input === "object" && input) ? input : null;
       var method = (init && init.method) || (req && req.method) || "GET";
