@@ -25,6 +25,10 @@ final class AppShell: NSObject {
     private var nextQuickLookId = 0
     private var peek: PeekOverlay?
     private var nextPeekId = 0
+    private var previewPopover: NSPopover?
+    private var previewInjector: InjectionCoordinator?
+    private var previewShowWork: DispatchWorkItem?
+    private var previewCloseWork: DispatchWorkItem?
     private var currentToast: NSView?
     private var toastDismiss: DispatchWorkItem?
     private var toastShareItems: [Any] = []
@@ -222,6 +226,61 @@ final class AppShell: NSObject {
         peek?.tearDown()
         peek?.removeFromSuperview()
         peek = nil
+    }
+
+    // MARK: - Previews (glance a favourite site on hover)
+
+    private func schedulePreview(for index: Int, from view: NSView) {
+        previewCloseWork?.cancel()
+        previewShowWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak view] in
+            guard let self, let view, view.window != nil else { return }
+            self.showPreview(index, from: view)
+        }
+        previewShowWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+    private func scheduleClosePreview() {
+        previewShowWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.closePreview() }
+        previewCloseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+    private func showPreview(_ index: Int, from view: NSView) {
+        guard tabs.indices.contains(index),
+              let url = tabs[index].currentURL ?? tabs[index].homeURL,
+              url.scheme?.hasPrefix("http") == true else { return }
+        previewPopover?.close()
+        let inj = previewInjector ?? InjectionCoordinator(broker: broker, contextName: "preview")
+        previewInjector = inj
+        inj.load(url)
+        let web = inj.webView!
+
+        // A live, interactive preview. Hovering it keeps it open; leaving closes it.
+        let container = HoverView(frame: NSRect(x: 0, y: 0, width: 480, height: 560))
+        container.onEntered = { [weak self] in self?.previewCloseWork?.cancel() }
+        container.onExited = { [weak self] in self?.scheduleClosePreview() }
+        web.frame = container.bounds
+        web.autoresizingMask = [.width, .height]
+        web.wantsLayer = true; web.layer?.cornerRadius = 8; web.layer?.masksToBounds = true
+        container.addSubview(web)
+
+        let vc = NSViewController()
+        vc.view = container
+        let pop = NSPopover()
+        pop.contentViewController = vc
+        pop.contentSize = NSSize(width: 480, height: 560)
+        pop.behavior = .applicationDefined // dismissed by hover-out, not outside clicks
+        pop.animates = true
+        previewPopover = pop
+        pop.show(relativeTo: view.bounds, of: view, preferredEdge: .maxX)
+    }
+    private func closePreview() {
+        previewShowWork?.cancel()
+        previewPopover?.close()
+        previewPopover = nil
+        previewInjector?.webView?.stopLoading()
+        if let blank = URL(string: "about:blank") { previewInjector?.load(blank) } // free the page
     }
 
     @objc func newTab() {
@@ -1478,6 +1537,11 @@ final class AppShell: NSObject {
         icon.onSelect = { [weak self] in self?.selectTab(index) }
         icon.menu = tabContextMenu(index)
         configureDrag(icon, tab: tab, horizontal: true) // reorder favourites by x
+        // Hover to glance: a live preview popover of the site.
+        icon.onHover = { [weak self, weak icon] inside in
+            guard let self, let icon else { return }
+            if inside { self.schedulePreview(for: index, from: icon) } else { self.scheduleClosePreview() }
+        }
         icon.wantsLayer = true
         icon.layer?.cornerRadius = 9
         icon.layer?.backgroundColor = tab.avatarColor.cgColor
