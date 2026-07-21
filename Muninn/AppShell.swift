@@ -184,25 +184,30 @@ final class AppShell: NSObject {
     private func setKind(_ index: Int, _ kind: TabKind) {
         guard tabs.indices.contains(index) else { return }
         tabs[index].kind = kind
-        animatedRebuild()
+        rebuildTabBar() // instant — the rest of the list doesn't flash
+        // Fade the moved tab in at its new section (targeted, no whole-list blink).
+        if let v = chipView(for: index) {
+            v.wantsLayer = true
+            v.alphaValue = 0
+            v.layer?.setAffineTransform(CGAffineTransform(translationX: 0, y: -6))
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.22
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                ctx.allowsImplicitAnimation = true
+                v.animator().alphaValue = 1
+                v.layer?.setAffineTransform(.identity)
+            }
+        }
         persist()
     }
 
-    /// Rebuild the sidebar with a quick crossfade — makes a tab moving between
-    /// sections (pin/favourite) feel fluid rather than snapping.
-    private func animatedRebuild() {
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.10
-            tabStack.animator().alphaValue = 0.0
-        }, completionHandler: { [weak self] in
-            guard let self else { return }
-            self.rebuildTabBar()
-            self.tabStack.alphaValue = 0.0
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.16
-                self.tabStack.animator().alphaValue = 1.0
-            }
-        })
+    /// Find the chip/favourite view for a tab index anywhere in the sidebar tree.
+    private func chipView(for index: Int, in view: NSView? = nil) -> NSView? {
+        for sub in (view ?? tabStack).subviews {
+            if let c = sub as? TabChipView, c.index == index { return c }
+            if let found = chipView(for: index, in: sub) { return found }
+        }
+        return nil
     }
     @objc private func pinTab(_ s: NSMenuItem) { setKind(s.tag, .pinned) }
     @objc private func favouriteTab(_ s: NSMenuItem) { setKind(s.tag, .favourite) }
