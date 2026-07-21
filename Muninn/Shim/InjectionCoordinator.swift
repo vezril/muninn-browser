@@ -49,6 +49,7 @@ final class InjectionCoordinator: NSObject {
     ///   (`inactiveSchedulingPolicy = .none`). Production passes nil.
     init(broker: MessageBroker, injectContentScripts: Bool = true,
          contextName: String = "page",
+         dataStore: WKWebsiteDataStore? = nil,
          configHook: ((WKWebViewConfiguration) -> Void)? = nil) {
         self.broker = broker
         self.contextName = contextName
@@ -56,6 +57,8 @@ final class InjectionCoordinator: NSObject {
         super.init()
 
         let config = WKWebViewConfiguration()
+        // Profiles: an isolated cookie/login/storage jar per profile (nil = the default store).
+        if let dataStore { config.websiteDataStore = dataStore }
         config.setURLSchemeHandler(ExtensionSchemeHandler(), forURLScheme: PassBundle.scheme)
 
         // E5 general injection (FR-9), per the vendored manifest:

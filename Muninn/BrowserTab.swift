@@ -252,9 +252,9 @@ final class BrowserTab {
     private var urlObs: NSKeyValueObservation?
     private var loadingObs: NSKeyValueObservation?
 
-    init(id: Int, broker: MessageBroker) {
+    init(id: Int, broker: MessageBroker, dataStore: WKWebsiteDataStore? = nil) {
         self.id = id
-        self.injector = InjectionCoordinator(broker: broker, contextName: "page-\(id)")
+        self.injector = InjectionCoordinator(broker: broker, contextName: "page-\(id)", dataStore: dataStore)
         titleObs = webView.observe(\.title, options: [.new]) { [weak self] wv, _ in
             MainActor.assumeIsolated { self?.refreshTitle(wv); self?.onChange?() }
         }
