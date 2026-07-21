@@ -76,6 +76,13 @@ final class AppShell: NSObject {
     private var sidebarOpen = true  // pinned-open
     private var peeking = false     // temporarily revealed by hovering the left edge
     private let toggleButton = NSButton()
+    // Right-side Tools sidebar (hosts the Live Calendar).
+    private let toolsSidebar = ToolsSidebar()
+    private let toolsButton = NSButton()
+    private var toolsOpen = false
+    private var webTrailingCollapsed: NSLayoutConstraint!
+    private var webTrailingWithTools: NSLayoutConstraint!
+    private static let toolsWidth: CGFloat = 280
     private var mouseMonitor: Any?
     private var archiveTimer: Timer?
     private static let sidebarWidth: CGFloat = 230
@@ -154,6 +161,7 @@ final class AppShell: NSObject {
         installGateLogging()
         host.start() // background.js resident; may open the fork URL immediately
         buildUI()
+        if saved.toolsSidebarOpen { setToolsOpen(true, animated: false) } // restore Tools sidebar
         showActiveWebView()
 
         loadLanding(activeTab) // default new-tab page (auth-fork paths override in present())
@@ -557,7 +565,8 @@ final class AppShell: NSObject {
                                 workspaces: workspaces,
                                 activeWorkspace: activeWorkspaceId.uuidString,
                                 profiles: profiles,
-                                routingRules: routingRules))
+                                routingRules: routingRules,
+                                toolsSidebarOpen: toolsOpen))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
@@ -970,9 +979,10 @@ final class AppShell: NSObject {
     /// Tint the sidebar + window background with the active workspace's colour — the visual
     /// "where am I" cue, extending under the traffic-light bar and around the floating card.
     private func applyWorkspaceTint() {
-        let tint = currentTintColor().cgColor
-        sidebar.layer?.backgroundColor = tint
-        window.contentView?.layer?.backgroundColor = tint
+        let tint = currentTintColor()
+        sidebar.layer?.backgroundColor = tint.cgColor
+        window.contentView?.layer?.backgroundColor = tint.cgColor
+        toolsSidebar.applyTint(tint)
     }
 
     /// A quick crossfade when switching workspaces (sidebar tint + web card swap).
@@ -2302,15 +2312,28 @@ final class AppShell: NSObject {
         sidebar.layer?.shadowOffset = CGSize(width: 3, height: 0)
         sidebar.layer?.shadowOpacity = 0 // docked by default
 
+        // Right Tools sidebar — flush to the right edge, framing the web card (mirrors left).
+        toolsSidebar.translatesAutoresizingMaskIntoConstraints = false
+        toolsSidebar.isHidden = true
+
+        // Tools toggle — top-right, in the transparent title-bar strip.
+        configureButton(toolsButton, symbol: "sidebar.right", action: #selector(toggleToolsSidebar))
+        toolsButton.toolTip = "Tools"
+
         let content = NSView()
         content.wantsLayer = true // holds the workspace tint behind the floating card
         content.addSubview(webContainer)
+        content.addSubview(toolsSidebar)   // right edge, behind the web card's shadow
         content.addSubview(sidebar)        // above the web card
+        content.addSubview(toolsButton)
         window.contentView = content
 
         sidebarLeadingConstraint = sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 0)
         webLeadingDocked = webContainer.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: Self.webCardInset)
         webLeadingFull = webContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.webCardInset)
+        // Web card right edge: window edge (tools hidden) vs the tools sidebar (tools shown).
+        webTrailingCollapsed = webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.webCardInset)
+        webTrailingWithTools = webContainer.trailingAnchor.constraint(equalTo: toolsSidebar.leadingAnchor, constant: -Self.webCardInset)
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -2319,7 +2342,13 @@ final class AppShell: NSObject {
             webContainer.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.webCardTopInset),
             webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -Self.webCardInset),
             webLeadingDocked, // active while pinned open (the default)
-            webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.webCardInset),
+            webTrailingCollapsed, // tools hidden by default
+            toolsSidebar.topAnchor.constraint(equalTo: content.topAnchor),
+            toolsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            toolsSidebar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            toolsSidebar.widthAnchor.constraint(equalToConstant: Self.toolsWidth),
+            toolsButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 6),
+            toolsButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
         ])
         // Peek: leaving the floating sidebar slides it back (only while collapsed).
         sidebar.onExited = { [weak self] in self?.closePeek() }
@@ -2398,6 +2427,26 @@ final class AppShell: NSObject {
         })
     }
 
+    @objc private func toggleToolsSidebar() { setToolsOpen(!toolsOpen, animated: true) }
+
+    private func setToolsOpen(_ open: Bool, animated: Bool) {
+        toolsOpen = open
+        toolsSidebar.isHidden = !open
+        webTrailingCollapsed.isActive = !open
+        webTrailingWithTools.isActive = open
+        toolsButton.contentTintColor = open ? .controlAccentColor : .labelColor
+        let apply = { self.window.contentView?.layoutSubtreeIfNeeded() }
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                ctx.allowsImplicitAnimation = true
+                apply()
+            }
+        } else { apply() }
+        persist()
+    }
+
     private func configureButton(_ b: NSButton, symbol: String, action: Selector) {
         b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
@@ -2447,6 +2496,7 @@ final class AppShell: NSObject {
         case .copyMarkdown:  copyActiveMarkdown()
         case .clearUnpinned: clearUnpinnedTabs()
         case .settings:      openSettings()
+        case .toolsSidebar:  toggleToolsSidebar()
         }
     }
 

@@ -2,12 +2,12 @@
 
 Built one task-group at a time, with a gate between groups.
 
-## Group 1 — Tools sidebar shell (right)
-- [ ] `ToolsSidebar` right panel (rounded card, workspace-tint aware) + vertical tool stack
-- [ ] Show/hide toggle in window chrome + `ShortcutAction.toolsSidebar` (remappable)
-- [ ] Web content resizes to the remaining width; collapse state persisted
-- [ ] Empty state ("Add a calendar in Settings → Calendars")
-- **Gate:** panel toggles, persists, looks native — Calvin eyeballs
+## Group 1 — Tools sidebar shell (right)  ✅
+- [x] `ToolsSidebar` right panel (workspace-tint aware) + vertical tool stack
+- [x] Show/hide toggle in window chrome (top-right `sidebar.right`) + `ShortcutAction.toolsSidebar` (⌘⌥T, remappable)
+- [x] Web content resizes to the remaining width; collapse state persisted (`SidebarState.toolsSidebarOpen`)
+- [x] Empty state ("Add a calendar in Settings → Calendars")
+- **Gate:** ✅ Calvin — "Works well" (2026-07-21)
 
 ## Group 2 — ICS parser + recurrence (pure, the bulk)
 - [ ] `ICSParser`: line unfolding, property/param parsing, `VTIMEZONE` table, `VEVENT` model

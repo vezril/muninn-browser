@@ -101,6 +101,8 @@ struct SidebarState: Codable {
     var activeWorkspace: String?
     var profiles: [Profile] = []
     var routingRules: [RoutingRule] = []
+    /// Whether the right-side Tools sidebar is shown.
+    var toolsSidebarOpen: Bool = false
 }
 
 /// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in
