@@ -21,7 +21,7 @@ final class HoverCloseButton: NSButton {
     }
     override func mouseEntered(with event: NSEvent) {
         wantsLayer = true
-        layer?.cornerRadius = 4
+        layer?.cornerRadius = bounds.height / 2 // circular
         layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.25).cgColor
         contentTintColor = .labelColor
     }

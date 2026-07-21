@@ -228,15 +228,16 @@ final class AppShell: NSObject {
         title.lineBreakMode = .byTruncatingTail
         title.translatesAutoresizingMaskIntoConstraints = false
 
-        let close = HoverCloseButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")!,
-                                     target: self, action: #selector(tabChipClosed(_:)))
+        let xmark = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold))
+        let close = HoverCloseButton(image: xmark ?? NSImage(), target: self, action: #selector(tabChipClosed(_:)))
         close.tag = index
         close.isBordered = false
         close.imageScaling = .scaleProportionallyDown
         close.contentTintColor = .secondaryLabelColor
         close.translatesAutoresizingMaskIntoConstraints = false
-        close.widthAnchor.constraint(equalToConstant: 20).isActive = true
-        close.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        close.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        close.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         chip.addSubview(title); chip.addSubview(close)
         NSLayoutConstraint.activate([
