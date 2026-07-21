@@ -45,3 +45,11 @@ receives it. No JS errors.
   `requestFork` directly (store `storage.session["f"+state]` + open the fork URL) to
   prove the auth-fork LOGIN end-to-end without the full popup UI. Bypasses the popup
   render; validates the hardest risk while the full popup (E7) is built separately.
+
+## Fork-init gate (2026-07-21) — reached Proton auth, but session cached; fork-back not triggered
+
+MUNINN_FORKINIT navigated the shell tab to `account.proton.me/authorize?app=proton-pass-extension&state=<nonce>&…&t=3`. Log: relay traffic on account.proton.me then **mail.proton.me** — Calvin was **ALREADY logged in** (Muninn's default WKWebsiteDataStore kept the Proton session from prior gates), so `/authorize` short-circuited to the default app (Mail). **No `fork` message, no `pullFork`** — can't tell if the fork-back failed on params or was just bypassed by the cached session.
+
+**Next:**
+- Rule out the cache confound: clear Muninn's website data (its OWN store, not the system browser) before fork-init, so `/authorize` does a fresh login → fork. (Or `prompt=login` should force it — verify it's honored.)
+- If fork still doesn't fire on a fresh session: refine the `/authorize` fork params (e.g. `pv=2` PayloadVersion; check the fork-response/redirect the popup relies on) OR reconsider using the account app's own fork path (the extension-onboarding flow DID make the account app send a `fork` message in gates 6–9 — pair that with a matching stored `f<state>`).
