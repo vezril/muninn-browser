@@ -17,6 +17,14 @@ final class AppShell: NSObject {
     private var activeIndex = 0
     private var nextTabId = 0
     private let store = SidebarStore()
+    private let history = HistoryStore()
+    /// Recently closed regular tabs (for Cmd+Shift+T), most-recent last.
+    private var closedTabs: [SavedTab] = []
+    private var palette: CommandPalette?
+    private var currentToast: NSView?
+    private var toastDismiss: DispatchWorkItem?
+    private var toastShareItems: [Any] = []
+    private var toastPinned = false // held open while hovered or while the share sheet is up
     /// Pinned-tab folders (collapsible, renamable, colourable).
     private var folders: [Folder] = []
     /// Workspaces (each owns its favourites / pins / folders / regular tabs).
@@ -151,7 +159,10 @@ final class AppShell: NSObject {
             self.rebuildTabBar()
             if tab === self.activeTab {
                 self.updateChrome()
-                if let url = tab.webView.url { self.storeForkStateIfPresent(url) }
+                if let url = tab.webView.url {
+                    self.storeForkStateIfPresent(url)
+                    self.history.record(url: url, title: tab.title)
+                }
             }
         }
         return tab
@@ -387,12 +398,17 @@ final class AppShell: NSObject {
         return n[abs(ws.id.uuidString.hashValue) % n.count]
     }
 
+    /// The active workspace's background tint (blend of the base bg + workspace colour).
+    private func currentTintColor() -> NSColor {
+        let base = NSColor.underPageBackgroundColor
+        guard let ws = workspaces.first(where: { $0.id == activeWorkspaceId }) else { return base }
+        return base.blended(withFraction: 0.20, of: wsColor(ws)) ?? base
+    }
+
     /// Tint the sidebar + window background with the active workspace's colour — the visual
     /// "where am I" cue, extending under the traffic-light bar and around the floating card.
     private func applyWorkspaceTint() {
-        guard let ws = workspaces.first(where: { $0.id == activeWorkspaceId }) else { return }
-        let base = NSColor.underPageBackgroundColor
-        let tint = (base.blended(withFraction: 0.20, of: wsColor(ws)) ?? base).cgColor
+        let tint = currentTintColor().cgColor
         sidebar.layer?.backgroundColor = tint
         window.contentView?.layer?.backgroundColor = tint
     }
@@ -675,8 +691,15 @@ final class AppShell: NSObject {
 
     func closeTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
+        // Favourites/pinned aren't removed by close — they unload (free memory) but stay
+        // in the sidebar, reloading lazily when picked again.
+        if tabs[index].kind != .regular {
+            unloadTab(index)
+            return
+        }
         let active = activeTab
         let closingActive = tabs[index] === active
+        if let saved = tabs[index].saved() { closedTabs.append(saved) } // for Cmd+Shift+T
         tabs[index].stop()
         tabs.remove(at: index)
         if tabs.isEmpty { window.performClose(nil); return } // truly the last tab → close window
@@ -696,6 +719,235 @@ final class AppShell: NSObject {
         showActiveWebView()
         rebuildTabBar()
         persist()
+    }
+
+    /// Unload a favourite/pinned tab (frees its page) and move off it if it was active.
+    private func unloadTab(_ index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        let wasActive = tabs[index] === activeTab
+        tabs[index].unload()
+        if wasActive {
+            if let i = tabs.firstIndex(where: { $0.workspaceId == activeWorkspaceId && $0 !== tabs[index] }) {
+                selectTab(i)
+            } else {
+                let t = makeTab(); t.workspaceId = activeWorkspaceId; tabs.append(t)
+                activeIndex = tabs.count - 1
+                showActiveWebView(); loadLanding(t)
+            }
+        }
+        rebuildTabBar()
+    }
+
+    // MARK: - keyboard actions
+
+    /// Cmd+D — pin/unpin the active tab.
+    @objc private func togglePinActive() {
+        setKind(activeIndex, activeTab.kind == .pinned ? .regular : .pinned)
+    }
+
+    /// Cmd+Shift+T — reopen the most recently closed regular tab.
+    @objc private func reopenLastClosed() {
+        guard let saved = closedTabs.popLast(), let url = URL(string: saved.url) else { return }
+        let tab = makeTab(); tab.workspaceId = activeWorkspaceId
+        tabs.append(tab); activeIndex = tabs.count - 1
+        showActiveWebView(); tab.load(url); rebuildTabBar()
+    }
+
+    /// Cmd+Shift+C — copy the active tab's URL.
+    @objc private func copyActiveURL() {
+        guard let url = activeWebView.url ?? activeTab.currentURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        showToast("Link copied", share: [url])
+    }
+
+    /// Cmd+Shift+Option+C — copy the active tab's URL as a Markdown link.
+    @objc private func copyActiveMarkdown() {
+        guard let url = activeWebView.url ?? activeTab.currentURL else { return }
+        let title = activeTab.title.isEmpty ? url.absoluteString : activeTab.title
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("[\(title)](\(url.absoluteString))", forType: .string)
+        showToast("Copied as Markdown", share: [url])
+    }
+
+    /// A small transient toast in the top-right, tinted to the current workspace, with an
+    /// optional Share button (standard macOS share sheet: AirDrop, Mail, Messages, …).
+    private func showToast(_ message: String, share items: [Any] = []) {
+        guard let content = window.contentView else { return }
+        currentToast?.removeFromSuperview()
+        toastDismiss?.cancel()
+        toastShareItems = items
+        toastPinned = false
+
+        let tint = currentTintColor()
+        let fg = Self.contrastingText(tint)
+        let container = HoverView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = tint.cgColor
+        container.layer?.cornerRadius = 10
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = fg.withAlphaComponent(0.12).cgColor
+        container.shadow = NSShadow()
+        container.layer?.shadowColor = NSColor.black.cgColor
+        container.layer?.shadowOpacity = 0.22
+        container.layer?.shadowRadius = 12
+        container.layer?.shadowOffset = CGSize(width: 0, height: -3)
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(labelWithString: message)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = fg
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            container.heightAnchor.constraint(equalToConstant: 38),
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+
+        var dismissDelay = 1.8
+        if !items.isEmpty {
+            // Share button as a filled accent chip so it clearly pops — inset from the
+            // container's rounded corner so it can't spill past it.
+            let share = NSButton(image: NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Share")!
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold))!,
+                                 target: self, action: #selector(shareToast(_:)))
+            share.isBordered = false
+            share.contentTintColor = .white
+            share.wantsLayer = true
+            share.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+            share.layer?.cornerRadius = 5
+            share.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(share)
+            NSLayoutConstraint.activate([
+                share.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 12),
+                share.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+                share.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                share.widthAnchor.constraint(equalToConstant: 24),
+                share.heightAnchor.constraint(equalToConstant: 20),
+            ])
+            dismissDelay = 4.0 // give time to hit Share
+        } else {
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14).isActive = true
+        }
+
+        // Hover keeps it up; leaving lets it fade shortly after.
+        container.onEntered = { [weak self] in self?.toastDismiss?.cancel() }
+        container.onExited = { [weak self, weak container] in
+            guard let self, !self.toastPinned else { return }
+            let work = DispatchWorkItem { [weak self, weak container] in self?.dismissToast(container) }
+            self.toastDismiss = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        }
+
+        content.addSubview(container)
+        NSLayoutConstraint.activate([
+            container.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            container.topAnchor.constraint(equalTo: content.topAnchor, constant: 46),
+        ])
+        currentToast = container
+
+        // Smooth slide-in from the right + fade.
+        container.alphaValue = 0
+        container.layer?.setAffineTransform(CGAffineTransform(translationX: 24, y: 0))
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.28
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            container.animator().alphaValue = 1
+            container.layer?.setAffineTransform(.identity)
+        }
+
+        let work = DispatchWorkItem { [weak self, weak container] in self?.dismissToast(container) }
+        toastDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + dismissDelay, execute: work)
+    }
+
+    private func dismissToast(_ toast: NSView?) {
+        guard let toast, !toastPinned else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.3
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            ctx.allowsImplicitAnimation = true
+            toast.animator().alphaValue = 0
+            toast.layer?.setAffineTransform(CGAffineTransform(translationX: 24, y: 0))
+        }, completionHandler: { [weak self, weak toast] in
+            toast?.removeFromSuperview()
+            if self?.currentToast === toast { self?.currentToast = nil }
+        })
+    }
+
+    @objc private func shareToast(_ sender: NSButton) {
+        guard !toastShareItems.isEmpty else { return }
+        // Haptic tap (Force Touch trackpads) + a quick press flash for visual feedback.
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        let pressed = NSColor.controlAccentColor.blended(withFraction: 0.35, of: .black)?.cgColor
+        sender.layer?.backgroundColor = pressed
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak sender] in
+            sender?.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        }
+        toastDismiss?.cancel()
+        toastPinned = true // keep the toast anchored while the share sheet is open
+        let picker = NSSharingServicePicker(items: toastShareItems)
+        picker.delegate = self
+        picker.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+
+    /// Cmd+Shift+K — close all unpinned (regular) tabs in the active workspace.
+    @objc private func clearUnpinnedTabs() {
+        let victims = tabs.enumerated().filter { $0.element.kind == .regular && $0.element.workspaceId == activeWorkspaceId }
+        for (_, tab) in victims { if let s = tab.saved() { closedTabs.append(s) }; tab.stop() }
+        let victimSet = Set(victims.map { ObjectIdentifier($0.element) })
+        tabs.removeAll { victimSet.contains(ObjectIdentifier($0)) }
+        if !tabs.contains(where: { $0.workspaceId == activeWorkspaceId }) {
+            let t = makeTab(); t.workspaceId = activeWorkspaceId; tabs.append(t)
+            activeIndex = tabs.count - 1; loadLanding(t)
+        } else {
+            activeIndex = tabs.firstIndex { $0.workspaceId == activeWorkspaceId } ?? 0
+        }
+        showActiveWebView(); rebuildTabBar(); persist()
+    }
+
+    /// Open a URL in a new regular tab in the active workspace.
+    private func openInNewTab(_ url: URL) {
+        let tab = makeTab(); tab.workspaceId = activeWorkspaceId
+        tabs.append(tab); activeIndex = tabs.count - 1
+        showActiveWebView(); tab.load(url); rebuildTabBar()
+    }
+
+    // MARK: - command palette (Cmd+N)
+
+    @objc private func openCommandPalette() {
+        if palette != nil { return }
+        guard let content = window.contentView else { return }
+        let p = CommandPalette()
+        p.openTabs = tabs.filter { $0.workspaceId == activeWorkspaceId }.map { ($0.id, $0.title, $0.currentURL) }
+        p.history = history.entries
+        p.onClose = { [weak self] in self?.closeCommandPalette() }
+        p.onExecute = { [weak self] item in
+            guard let self else { return }
+            switch item.kind {
+            case .tab(let id): if let i = self.tabIndex(id: id) { self.selectTab(i) }
+            case .url(let url): self.openInNewTab(url)
+            case .search(let q): self.openInNewTab(Self.duckDuckGo(q))
+            }
+            self.closeCommandPalette()
+        }
+        palette = p
+        p.activate(in: content)
+    }
+
+    private func closeCommandPalette() {
+        palette?.removeFromSuperview()
+        palette = nil
+        window.makeFirstResponder(activeWebView)
+    }
+
+    private static func duckDuckGo(_ query: String) -> URL {
+        var c = URLComponents(string: "https://duckduckgo.com/")!
+        c.queryItems = [URLQueryItem(name: "q", value: query)]
+        return c.url ?? URL(string: "https://duckduckgo.com/")!
     }
 
     private func showActiveWebView() {
@@ -1242,9 +1494,19 @@ final class AppShell: NSObject {
                 return nil
             }
             guard flags.contains(.command) else { return e }
-            switch e.charactersIgnoringModifiers {
+            let key = (e.charactersIgnoringModifiers ?? "").lowercased()
+            let shift = flags.contains(.shift), opt = flags.contains(.option)
+            // Shift/Option combos first (more specific).
+            if shift && opt && key == "c" { self.copyActiveMarkdown(); return nil }
+            if shift && key == "c" { self.copyActiveURL(); return nil }
+            if shift && key == "t" { self.reopenLastClosed(); return nil }
+            if shift && key == "k" { self.clearUnpinnedTabs(); return nil }
+            guard !shift && !opt else { return e }
+            switch key {
+            case "n": self.openCommandPalette(); return nil
             case "t": self.newTab(); return nil
             case "w": self.closeActiveTab(); return nil
+            case "d": self.togglePinActive(); return nil
             case "l": self.window.makeFirstResponder(self.addressField); return nil
             case "r": self.reload(); return nil
             default: return e
@@ -1298,5 +1560,13 @@ final class AppShell: NSObject {
                 }
             }
         }
+    }
+}
+
+extension AppShell: @preconcurrency NSSharingServicePickerDelegate {
+    /// Release the pinned toast once the share sheet is dismissed (service chosen or not).
+    func sharingServicePicker(_ picker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+        toastPinned = false
+        dismissToast(currentToast)
     }
 }
