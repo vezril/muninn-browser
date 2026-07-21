@@ -11,6 +11,42 @@ struct SavedTab: Codable {
     var faviconBase64: String?
     /// UUID (string) of the folder this pinned tab belongs to, if any.
     var folderId: String?
+    /// UUID (string) of the owning workspace (optional for migration).
+    var workspaceId: String?
+}
+
+extension NSColor {
+    /// Parse "#RRGGBB" (or "RRGGBB"). Returns nil on malformed input.
+    convenience init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = Int(s, radix: 16) else { return nil }
+        self.init(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                  blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+    }
+    /// "#RRGGBB" in sRGB.
+    var toHex: String {
+        let c = usingColorSpace(.sRGB) ?? self
+        return String(format: "#%02X%02X%02X",
+                      Int(round(c.redComponent * 255)), Int(round(c.greenComponent * 255)),
+                      Int(round(c.blueComponent * 255)))
+    }
+}
+
+/// A container view that reports when the cursor leaves it — used for the sidebar's
+/// hover-peek (slide back when the pointer moves off the floating sidebar).
+final class HoverView: NSView {
+    var onExited: (() -> Void)?
+    private var area: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = area { removeTrackingArea(a); area = nil }
+        guard onExited != nil else { return }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a); area = a
+    }
+    override func mouseExited(with e: NSEvent) { onExited?() }
 }
 
 /// What a drag carries: a tab (by stable id) or a folder (by id).
@@ -33,9 +69,12 @@ final class TabChipView: NSView, NSDraggingSource {
     var dropHorizontal = false // favourites row: decide before/after by x, not y
     /// (payload, insertBefore) — nil = not a drop target.
     var onDrop: ((DragPayload, Bool) -> Void)?
+    /// Hover in/out (nil = no hover tracking) — used for workspace name peeks.
+    var onHover: ((Bool) -> Void)?
 
     private var mouseDownAt: NSPoint?
     private var dragging = false
+    private var hoverArea: NSTrackingArea?
     private lazy var dropLine: NSView = {
         let v = NSView()
         v.wantsLayer = true
@@ -50,6 +89,17 @@ final class TabChipView: NSView, NSDraggingSource {
         super.viewDidMoveToWindow()
         if onDrop != nil { registerForDraggedTypes([Self.tabType, Self.folderType]) }
     }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let h = hoverArea { removeTrackingArea(h); hoverArea = nil }
+        guard onHover != nil else { return }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a); hoverArea = a
+    }
+    override func mouseEntered(with e: NSEvent) { onHover?(true) }
+    override func mouseExited(with e: NSEvent) { onHover?(false) }
 
     // MARK: click vs drag
     override func mouseDown(with e: NSEvent) { mouseDownAt = e.locationInWindow; dragging = false }
@@ -155,6 +205,8 @@ final class BrowserTab {
     var kind: TabKind = .regular
     /// If pinned, the folder it lives in (nil = ungrouped pinned).
     var folderId: UUID?
+    /// The workspace this tab belongs to.
+    var workspaceId: UUID?
     /// URL a restored favourite/pinned tab should load lazily on first activation.
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).
@@ -250,7 +302,8 @@ final class BrowserTab {
         guard let u = currentURL?.absoluteString, !u.isEmpty, !u.hasPrefix("about:") else { return nil }
         return SavedTab(url: u, title: title, kind: kind,
                         faviconBase64: faviconData?.base64EncodedString(),
-                        folderId: folderId?.uuidString)
+                        folderId: folderId?.uuidString,
+                        workspaceId: workspaceId?.uuidString)
     }
 
     func stop() {

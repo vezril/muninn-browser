@@ -1,5 +1,22 @@
 import Foundation
 
+/// A named, colourable space with its own favourites / pinned tabs / folders (and regular
+/// tabs). Switching workspaces swaps the visible sets.
+struct Workspace: Codable, Identifiable {
+    var id: UUID
+    var name: String
+    /// Emoji shown on the switcher chip (nil → a default is derived).
+    var icon: String?
+    /// Background tint as "#RRGGBB" (nil → falls back to `colorIndex`/default).
+    var colorHex: String?
+    /// Legacy palette index (kept for migration from the first workspaces build).
+    var colorIndex: Int?
+
+    init(id: UUID = UUID(), name: String, icon: String? = nil, colorHex: String? = nil) {
+        self.id = id; self.name = name; self.icon = icon; self.colorHex = colorHex
+    }
+}
+
 /// A named, colourable, collapsible group for pinned tabs.
 struct Folder: Codable, Identifiable {
     var id: UUID
@@ -7,9 +24,12 @@ struct Folder: Codable, Identifiable {
     /// Index into `Folder.palette` (kept as an index so the swatch survives renames).
     var colorIndex: Int
     var collapsed: Bool
+    /// Owning workspace (optional for migration from pre-workspaces files).
+    var workspaceId: UUID?
 
-    init(id: UUID = UUID(), name: String, colorIndex: Int = 0, collapsed: Bool = false) {
-        self.id = id; self.name = name; self.colorIndex = colorIndex; self.collapsed = collapsed
+    init(id: UUID = UUID(), name: String, colorIndex: Int = 0, collapsed: Bool = false, workspaceId: UUID? = nil) {
+        self.id = id; self.name = name; self.colorIndex = colorIndex
+        self.collapsed = collapsed; self.workspaceId = workspaceId
     }
 
     /// The folder swatch palette (name shown in the colour menu → RGB).
@@ -25,10 +45,12 @@ struct Folder: Codable, Identifiable {
     ]
 }
 
-/// What the sidebar persists: the saved tabs plus the folder definitions.
+/// What the sidebar persists: saved tabs, folder definitions, workspaces, and the active one.
 struct SidebarState: Codable {
     var tabs: [SavedTab] = []
     var folders: [Folder] = []
+    var workspaces: [Workspace] = []
+    var activeWorkspace: String?
 }
 
 /// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in
