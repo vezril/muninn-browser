@@ -29,7 +29,9 @@ final class AppShell: NSObject {
     private var sidebarWidthConstraint: NSLayoutConstraint!
     private var sidebarOpen = true
     private let toggleButton = NSButton()
+    private let revealButton = NSButton() // shown only when the sidebar is collapsed
     private static let sidebarWidth: CGFloat = 230
+    private static let topInset: CGFloat = 8 // sidebar/content top padding below the title bar
     private let webContainer = NSView()
     private var keyMonitor: Any?
     /// Only during an explicit sign-in do we let the extension's `onInstalled` →
@@ -301,6 +303,8 @@ final class AppShell: NSObject {
         configureButton(backButton, symbol: "chevron.backward", action: #selector(goBack))
         configureButton(forwardButton, symbol: "chevron.forward", action: #selector(goForward))
         configureButton(reloadButton, symbol: "arrow.clockwise", action: #selector(reload))
+        configureButton(revealButton, symbol: "sidebar.left", action: #selector(toggleSidebar))
+        revealButton.isHidden = true // only when collapsed
 
         addressField.placeholderString = "Search or enter a URL"
         addressField.target = self
@@ -308,37 +312,45 @@ final class AppShell: NSObject {
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.font = .systemFont(ofSize: 13)
 
-        let toolbar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton, addressField])
-        toolbar.orientation = .horizontal
-        toolbar.spacing = 6
-        toolbar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
-        toolbar.setHuggingPriority(.defaultLow, for: .horizontal)
+        // Nav cluster — top of the sidebar, under the window buttons.
+        let navRow = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton])
+        navRow.orientation = .horizontal
+        navRow.spacing = 4
+        navRow.translatesAutoresizingMaskIntoConstraints = false
 
-        // Left sidebar: a vertical tab list (+ new-tab button), collapsible.
+        // Left sidebar: nav row + vertical tab list, collapsible.
         sidebar.wantsLayer = true
         sidebar.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
-        sidebar.layer?.masksToBounds = true // clip content when collapsed to width 0
+        sidebar.layer?.masksToBounds = true
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         tabStack.orientation = .vertical
         tabStack.alignment = .leading
         tabStack.spacing = 3
         tabStack.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(navRow)
         sidebar.addSubview(tabStack)
         NSLayoutConstraint.activate([
-            tabStack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 8),
+            navRow.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: Self.topInset),
+            navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            tabStack.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 10),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
         ])
 
+        // Right area: a slim address bar over the web content.
         webContainer.translatesAutoresizingMaskIntoConstraints = false
+        let addrRow = NSStackView(views: [addressField])
+        addrRow.orientation = .horizontal
+        addrRow.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        addrRow.translatesAutoresizingMaskIntoConstraints = false
         let rightArea = NSView()
         rightArea.translatesAutoresizingMaskIntoConstraints = false
-        rightArea.addSubview(toolbar); rightArea.addSubview(webContainer)
+        rightArea.addSubview(addrRow); rightArea.addSubview(webContainer)
 
         let content = NSView()
         content.addSubview(sidebar)
         content.addSubview(rightArea)
+        content.addSubview(revealButton) // floats top-left when the sidebar is hidden
         window.contentView = content
 
         sidebarWidthConstraint = sidebar.widthAnchor.constraint(equalToConstant: Self.sidebarWidth)
@@ -351,13 +363,15 @@ final class AppShell: NSObject {
             rightArea.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             rightArea.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             rightArea.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            toolbar.topAnchor.constraint(equalTo: rightArea.topAnchor),
-            toolbar.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
-            toolbar.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
-            webContainer.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            addrRow.topAnchor.constraint(equalTo: rightArea.topAnchor, constant: Self.topInset),
+            addrRow.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
+            addrRow.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
+            webContainer.topAnchor.constraint(equalTo: addrRow.bottomAnchor),
             webContainer.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
             webContainer.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
             webContainer.bottomAnchor.constraint(equalTo: rightArea.bottomAnchor),
+            revealButton.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.topInset),
+            revealButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 8),
         ])
         rebuildTabBar()
     }
@@ -365,6 +379,7 @@ final class AppShell: NSObject {
     @objc private func toggleSidebar() {
         sidebarOpen.toggle()
         tabStack.isHidden = !sidebarOpen
+        revealButton.isHidden = sidebarOpen
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             ctx.allowsImplicitAnimation = true
