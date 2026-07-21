@@ -27,10 +27,16 @@ final class AppShell: NSObject {
     private let tabBar = NSStackView()
     private let webContainer = NSView()
     private var keyMonitor: Any?
+    /// Only during an explicit sign-in do we let the extension's `onInstalled` →
+    /// `tabs.create` (the Proton onboarding page) drive the tab. In plain browsing it
+    /// must NOT hijack the landing page.
+    private let signInMode: Bool
 
     override init() {
         broker = MessageBroker()
         host = BackgroundHost(broker: broker)
+        let env = ProcessInfo.processInfo.environment
+        signInMode = env["MUNINN_FORKINIT"] != nil || env["MUNINN_POPUP"] != nil || env["MUNINN_SIGNIN"] != nil
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -44,11 +50,10 @@ final class AppShell: NSObject {
         // tabs.create/windows.create. Route those to the active tab, and — the fork-init
         // the popup normally does — store the fork `localState` under
         // `storage.session["f"+state]` for the URL's `state` nonce so consume matches.
-        var didOpen = false
         broker.onOpenURL = { [weak self] url, _ in
-            didOpen = true
-            self?.storeForkStateIfPresent(url)
-            self?.activeTab.load(url)
+            guard let self, self.signInMode else { return } // don't hijack plain browsing
+            self.storeForkStateIfPresent(url)
+            self.activeTab.load(url)
         }
 
         installGateLogging()
@@ -236,8 +241,8 @@ final class AppShell: NSObject {
         close.imageScaling = .scaleProportionallyDown
         close.contentTintColor = .secondaryLabelColor
         close.translatesAutoresizingMaskIntoConstraints = false
-        close.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        close.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        close.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        close.heightAnchor.constraint(equalToConstant: 16).isActive = true
 
         chip.addSubview(title); chip.addSubview(close)
         NSLayoutConstraint.activate([
