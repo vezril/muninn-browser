@@ -6,12 +6,20 @@ import AppKit
 final class CommandPalette: NSView {
     /// A single actionable row.
     struct Item {
-        enum Kind { case tab(Int), url(URL), search(String) }
+        enum Kind { case tab(Int), url(URL), search(String), command(String) }
         let kind: Kind
         let title: String
         let detail: String?
         let trailing: String?
         let symbol: String
+    }
+
+    /// An app action offered in the palette (e.g. "Open Inspector").
+    struct Command {
+        let id: String
+        let title: String
+        let symbol: String
+        let shortcut: String?   // e.g. "⌘R", shown on the right
     }
 
     var onExecute: ((Item) -> Void)?
@@ -20,6 +28,7 @@ final class CommandPalette: NSView {
     /// Data the host refreshes each time the palette opens.
     var openTabs: [(id: Int, title: String, url: URL?)] = []
     var history: [HistoryEntry] = []
+    var commands: [Command] = []
     var searchEngineName = "DuckDuckGo"
 
     private let panel = NSView()
@@ -138,6 +147,10 @@ final class CommandPalette: NSView {
         }
         let ql = q.lowercased()
         func match(_ text: String...) -> Bool { q.isEmpty || text.contains { $0.lowercased().contains(ql) } }
+        // Commands (actions) — surfaced first so "insp" → Open Inspector is one keystroke away.
+        for c in commands where match(c.title) {
+            out.append(Item(kind: .command(c.id), title: c.title, detail: nil, trailing: c.shortcut, symbol: c.symbol))
+        }
         for t in openTabs where match(t.title, t.url?.absoluteString ?? "") {
             out.append(Item(kind: .tab(t.id), title: t.title.isEmpty ? (t.url?.host ?? "Tab") : t.title,
                             detail: t.url?.host, trailing: "Switch to Tab", symbol: "square.on.square"))
