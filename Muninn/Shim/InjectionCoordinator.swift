@@ -29,6 +29,8 @@ final class InjectionCoordinator: NSObject {
     /// Called for `target="_blank"` / `window.open` (no WKWebView is created here — the host
     /// decides: a new tab, or a Peek from a pinned tab).
     var onCreateWebView: ((WKNavigationAction) -> Void)?
+    /// Fired when this page starts/stops playing media (for the Mini Player).
+    var onMediaState: ((Bool) -> Void)?
 
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
@@ -73,6 +75,8 @@ final class InjectionCoordinator: NSObject {
         if let poly = Self.resource("content-polyfill", "js") {
             addUserScript(poly, at: .atDocumentStart, world: isolatedWorld, allFrames: true)
         }
+        // Media detection (Mini Player) — isolated world so the page can't spoof state.
+        addUserScript(Self.mediaProbeJS, at: .atDocumentStart, world: isolatedWorld, allFrames: true)
         // externally_connectable bridge — MAIN world, document_start, all frames.
         // Self-gates on the manifest's externally_connectable hosts, so every other
         // origin's MAIN world stays clean (S2). Injected unconditionally (it's the
@@ -104,6 +108,9 @@ final class InjectionCoordinator: NSObject {
         config.userContentController.addScriptMessageHandler(
             bridge, contentWorld: isolatedWorld, name: "brokerIsolated")
         self.bridge = bridge
+
+        // Media state channel (Mini Player), isolated world.
+        config.userContentController.add(MediaHandler(injector: self), contentWorld: isolatedWorld, name: "muninnMedia")
 
         configHook?(config)
         self.webView = WKWebView(frame: .zero, configuration: config)
@@ -209,6 +216,32 @@ extension InjectionCoordinator: WKNavigationDelegate {
             if case .failure(let e) = result { self?.note("forkFailed", ["error": String(describing: e)]) }
             else { self?.note("forkInjected") }
         }
+    }
+}
+
+extension InjectionCoordinator {
+    /// Reports play/pause of any `<video>`/`<audio>` on the page (capture-phase, so it catches
+    /// elements added later) to the `muninnMedia` handler — drives the Mini Player.
+    static let mediaProbeJS = """
+    (function(){
+      if (window.__muninnMedia) return; window.__muninnMedia = true;
+      function anyPlaying(){
+        try { return Array.prototype.some.call(document.querySelectorAll('video,audio'),
+          function(m){ return !m.paused && !m.ended; }); } catch(e){ return false; }
+      }
+      function report(){ try { webkit.messageHandlers.muninnMedia.postMessage({playing: anyPlaying()}); } catch(e){} }
+      ['play','playing','pause','ended','emptied'].forEach(function(ev){ document.addEventListener(ev, report, true); });
+    })();
+    """
+}
+
+@MainActor
+private final class MediaHandler: NSObject, WKScriptMessageHandler {
+    weak var injector: InjectionCoordinator?
+    init(injector: InjectionCoordinator) { self.injector = injector }
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        let playing = (message.body as? [String: Any])?["playing"] as? Bool ?? false
+        injector?.onMediaState?(playing)
     }
 }
 

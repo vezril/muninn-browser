@@ -29,6 +29,8 @@ final class AppShell: NSObject {
     private var previewInjector: InjectionCoordinator?
     private var previewShowWork: DispatchWorkItem?
     private var previewCloseWork: DispatchWorkItem?
+    private var miniPlayer: MiniPlayerWindow?
+    private var miniTabId: Int?
     private var currentToast: NSView?
     private var toastDismiss: DispatchWorkItem?
     private var toastShareItems: [Any] = []
@@ -181,6 +183,12 @@ final class AppShell: NSObject {
             guard let self, let tab else { return .allow }
             return self.decideNavigation(for: tab, action)
         }
+        // Mini Player: track media playback so switching away can pop it out.
+        tab.injector.onMediaState = { [weak self, weak tab] playing in
+            guard let self, let tab else { return }
+            tab.isPlayingMedia = playing
+            if tab.id == self.miniTabId { self.miniPlayer?.setPlaying(playing) }
+        }
         // target="_blank" / window.open: Peek from a pinned tab (cross-site), else a new tab.
         tab.injector.onCreateWebView = { [weak self, weak tab] action in
             guard let self, let tab, let url = action.request.url, url.scheme?.hasPrefix("http") == true else { return }
@@ -283,10 +291,103 @@ final class AppShell: NSObject {
         if let blank = URL(string: "about:blank") { previewInjector?.load(blank) } // free the page
     }
 
+    // MARK: - Mini Player (watch/listen while browsing)
+
+    private static let mediaToggleJS = "(function(){var m=Array.prototype.find.call(document.querySelectorAll('video,audio'),function(x){return !x.ended;});if(!m)return;if(m.paused)m.play();else m.pause();})()"
+    private static let mediaPauseJS = "(function(){Array.prototype.forEach.call(document.querySelectorAll('video,audio'),function(m){if(!m.paused)m.pause();});})()"
+    /// Float the playing <video> fullscreen over a black overlay (reversible) so the Mini Player
+    /// shows only the video, not the whole page.
+    // Reparent the playing <video> into a fixed fullscreen wrapper at the document root (this
+    // survives transformed/clipped ancestors like YouTube), size it with !important rules (so
+    // the site's own inline sizing can't win — the video then scales with the window), and add
+    // click-to-toggle with a centered icon flash.
+    private static let videoOnlyEnterJS = """
+    (function(){
+      var vids=document.querySelectorAll('video');
+      var v=Array.prototype.find.call(vids,function(x){return !x.paused;})||vids[0];
+      if(!v||window.__muninnMiniVideo){return;}
+      v.__muninnMini={parent:v.parentNode,next:v.nextSibling};
+      window.__muninnMiniVideo=v;
+      var st=document.createElement('style');st.id='__muninnMiniStyle';
+      st.textContent=
+        '#__muninnMiniWrap{position:fixed;top:0;left:0;width:100vw;height:100vh;margin:0;background:#000;z-index:2147483647;display:flex;align-items:center;justify-content:center;}'+
+        '#__muninnMiniWrap video{width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important;object-fit:contain!important;background:#000!important;left:auto!important;top:auto!important;}'+
+        '#__muninnMiniIcon{position:absolute;top:50%;left:50%;width:96px;height:96px;transform:translate(-50%,-50%);pointer-events:none;opacity:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);border-radius:50%;color:#fff;font:600 46px -apple-system,system-ui,Arial,sans-serif;line-height:1;}'+
+        '@keyframes muninnPop{0%{opacity:0;transform:translate(-50%,-50%) scale(.6);}18%{opacity:1;transform:translate(-50%,-50%) scale(1);}100%{opacity:0;transform:translate(-50%,-50%) scale(1.4);}}'+
+        'html{overflow:hidden!important;}';
+      document.documentElement.appendChild(st);
+      var wrap=document.createElement('div');wrap.id='__muninnMiniWrap';
+      document.documentElement.appendChild(wrap);
+      wrap.appendChild(v);
+      var icon=document.createElement('div');icon.id='__muninnMiniIcon';wrap.appendChild(icon);
+      window.__muninnToggle=function(){
+        var vid=window.__muninnMiniVideo; if(!vid)return;
+        var pausing=!vid.paused;
+        if(vid.paused)vid.play();else vid.pause();
+        icon.textContent=pausing?'⏸':'▶';
+        icon.style.animation='none'; void icon.offsetWidth; icon.style.animation='muninnPop .55s ease-out';
+      };
+    })()
+    """
+    private static let videoOnlyExitJS = """
+    (function(){
+      var v=window.__muninnMiniVideo;
+      if(v&&v.__muninnMini){
+        var i=v.__muninnMini;
+        if(i.parent){ if(i.next&&i.next.parentNode===i.parent)i.parent.insertBefore(v,i.next);else i.parent.appendChild(v); }
+        delete v.__muninnMini;
+      }
+      window.__muninnMiniVideo=null; window.__muninnToggle=null;
+      var wrap=document.getElementById('__muninnMiniWrap');if(wrap)wrap.remove();
+      var st=document.getElementById('__muninnMiniStyle');if(st)st.remove();
+      document.documentElement.style.overflow='';
+    })()
+    """
+
+    /// Pop a still-playing tab out into the Mini Player (borrows its web view, shows just the video).
+    private func startMiniPlayer(_ tab: BrowserTab) {
+        stopMiniPlayer()
+        let mp = MiniPlayerWindow()
+        miniPlayer = mp; miniTabId = tab.id
+        mp.attach(tab.webView)
+        tab.webView.evaluateJavaScript(Self.videoOnlyEnterJS, completionHandler: nil)
+        mp.setPlaying(tab.isPlayingMedia)
+        mp.onTogglePlay = { [weak self] in self?.toggleMiniPlay() }
+        mp.onReturn = { [weak self] in
+            guard let self, let id = self.miniTabId, let i = self.tabIndex(id: id) else { return }
+            self.selectTab(i)
+        }
+        mp.onClose = { [weak self] in self?.closeMiniPlayer(pause: true) }
+        mp.present()
+    }
+
+    private func stopMiniPlayer() {
+        if let id = miniTabId, let i = tabIndex(id: id) {
+            tabs[i].webView.evaluateJavaScript(Self.videoOnlyExitJS, completionHandler: nil) // restore the page
+        }
+        miniPlayer?.teardown()
+        miniPlayer = nil; miniTabId = nil
+    }
+
+    private func closeMiniPlayer(pause: Bool) {
+        if pause, let id = miniTabId, let i = tabIndex(id: id) {
+            tabs[i].webView.evaluateJavaScript(Self.mediaPauseJS, completionHandler: nil)
+        }
+        stopMiniPlayer()
+    }
+
+    private func toggleMiniPlay() {
+        guard let id = miniTabId, let i = tabIndex(id: id) else { return }
+        // Prefer the mini-mode toggle (shows the icon flash); fall back to a plain toggle.
+        tabs[i].webView.evaluateJavaScript("window.__muninnToggle?(window.__muninnToggle(),1):0", completionHandler: nil)
+    }
+
     @objc func newTab() {
+        let outgoing = activeTab
         let tab = makeTab(); tab.workspaceId = activeWorkspaceId
         tabs.append(tab)
         activeIndex = tabs.count - 1
+        popOutIfPlaying(outgoing) // Cmd+T while a video plays → Mini Player
         showActiveWebView()
         rebuildTabBar()
         loadLanding(activeTab)
@@ -337,11 +438,21 @@ final class AppShell: NSObject {
 
     func selectTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
+        // Returning to the mini'd tab reclaims its web view from the Mini Player.
+        if tabs[index].id == miniTabId { stopMiniPlayer() }
+        let outgoing = activeTab
         activeIndex = index
         lastActiveTabId[activeWorkspaceId] = tabs[index].id
         tabs[index].ensureLoaded() // lazily load a restored favourite/pinned tab
+        popOutIfPlaying(outgoing) // switching away from a still-playing tab → Mini Player
         showVisibleTabs() // shows the tab's split group, or the tab alone
         rebuildTabBar()
+    }
+
+    /// Pop the outgoing tab into the Mini Player if it's still playing media.
+    private func popOutIfPlaying(_ outgoing: BrowserTab) {
+        guard outgoing !== activeTab, outgoing.isPlayingMedia, outgoing.id != miniTabId else { return }
+        startMiniPlayer(outgoing)
     }
 
     /// Persist favourites + pinned tabs, folders, and workspaces (regular tabs are session-only).
@@ -623,6 +734,7 @@ final class AppShell: NSObject {
 
     private func switchWorkspace(to wid: UUID) {
         guard wid != activeWorkspaceId, workspaces.contains(where: { $0.id == wid }) else { return }
+        let outgoing = activeTab
         lastActiveTabId[activeWorkspaceId] = activeTab.id
         activeWorkspaceId = wid
         animateWorkspaceSwitch()
@@ -636,6 +748,7 @@ final class AppShell: NSObject {
             loadLanding(t)
         }
         activeTab.ensureLoaded()
+        popOutIfPlaying(outgoing) // switching workspace away from a playing tab → Mini Player
         showActiveWebView(); rebuildTabBar(); persist()
     }
 
@@ -834,6 +947,7 @@ final class AppShell: NSObject {
 
     func closeTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
+        if tabs[index].id == miniTabId { stopMiniPlayer() } // reclaim the borrowed web view first
         // A split member "closes" out of the split rather than closing the tab.
         if tabs[index].splitGroupId != nil {
             removeFromSplit(index)
