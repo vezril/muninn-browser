@@ -6,14 +6,119 @@ import WebKit
 enum TabKind: String, Codable { case favourite, pinned, regular }
 
 /// Persisted representation of a favourite/pinned tab (restored on next launch).
-struct SavedTab: Codable { var url: String; var title: String; var kind: TabKind; var faviconBase64: String? }
+struct SavedTab: Codable {
+    var url: String; var title: String; var kind: TabKind
+    var faviconBase64: String?
+    /// UUID (string) of the folder this pinned tab belongs to, if any.
+    var folderId: String?
+}
 
-/// A tab-bar chip. Selection is via `mouseDown` (which the close button, being a
-/// subview, naturally consumes — so clicking × never also selects the tab).
-final class TabChipView: NSView {
+/// What a drag carries: a tab (by stable id) or a folder (by id).
+enum DragPayload { case tab(Int); case folder(UUID) }
+
+/// A tab-bar chip / folder header. A plain click selects (fired on mouse-up if no drag
+/// happened); the close button, being a subview, consumes its own clicks. Acts as a drag
+/// source (set `dragTab` or `dragFolder`) and a reorder-aware drop target (set `onDrop`,
+/// which receives the payload and whether to insert *before* this row).
+final class TabChipView: NSView, NSDraggingSource {
+    static let tabType = NSPasteboard.PasteboardType("com.vezril.muninn.tab")
+    static let folderType = NSPasteboard.PasteboardType("com.vezril.muninn.folder")
+
+    override var isFlipped: Bool { true } // top-left origin → "before" = upper/left half
+
     var index: Int = 0
     var onSelect: (() -> Void)?
-    override func mouseDown(with event: NSEvent) { onSelect?() }
+    var dragTab: Int?          // draggable as a tab
+    var dragFolder: UUID?      // draggable as a folder
+    var dropHorizontal = false // favourites row: decide before/after by x, not y
+    /// (payload, insertBefore) — nil = not a drop target.
+    var onDrop: ((DragPayload, Bool) -> Void)?
+
+    private var mouseDownAt: NSPoint?
+    private var dragging = false
+    private lazy var dropLine: NSView = {
+        let v = NSView()
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        v.layer?.cornerRadius = 1
+        v.isHidden = true
+        addSubview(v)
+        return v
+    }()
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if onDrop != nil { registerForDraggedTypes([Self.tabType, Self.folderType]) }
+    }
+
+    // MARK: click vs drag
+    override func mouseDown(with e: NSEvent) { mouseDownAt = e.locationInWindow; dragging = false }
+    override func mouseDragged(with e: NSEvent) {
+        guard !dragging, let start = mouseDownAt else { return }
+        let dx = e.locationInWindow.x - start.x, dy = e.locationInWindow.y - start.y
+        guard dx * dx + dy * dy > 16 else { return } // 4pt threshold
+        let item = NSPasteboardItem()
+        if let t = dragTab { item.setString(String(t), forType: Self.tabType) }
+        else if let f = dragFolder { item.setString(f.uuidString, forType: Self.folderType) }
+        else { return }
+        dragging = true
+        let drag = NSDraggingItem(pasteboardWriter: item)
+        drag.setDraggingFrame(bounds, contents: snapshot())
+        beginDraggingSession(with: [drag], event: e, source: self)
+    }
+    override func mouseUp(with e: NSEvent) {
+        if !dragging { onSelect?() }
+        mouseDownAt = nil; dragging = false
+    }
+    func draggingSession(_ s: NSDraggingSession, sourceOperationMaskFor c: NSDraggingContext) -> NSDragOperation { .move }
+    func draggingSession(_ s: NSDraggingSession, endedAt p: NSPoint, operation: NSDragOperation) {
+        dragging = false; mouseDownAt = nil
+    }
+
+    private func snapshot() -> NSImage {
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return NSImage(size: bounds.size) }
+        cacheDisplay(in: bounds, to: rep)
+        let img = NSImage(size: bounds.size); img.addRepresentation(rep); return img
+    }
+
+    // MARK: drop target
+    private func payload(_ s: NSDraggingInfo) -> DragPayload? {
+        let pb = s.draggingPasteboard
+        if let t = pb.string(forType: Self.tabType).flatMap({ Int($0) }) { return .tab(t) }
+        if let f = pb.string(forType: Self.folderType).flatMap({ UUID(uuidString: $0) }) { return .folder(f) }
+        return nil
+    }
+    private func insertBefore(_ s: NSDraggingInfo) -> Bool {
+        let p = convert(s.draggingLocation, from: nil)
+        return dropHorizontal ? (p.x < bounds.midX) : (p.y < bounds.midY)
+    }
+    private func accepts(_ s: NSDraggingInfo) -> Bool {
+        guard onDrop != nil, let p = payload(s) else { return false }
+        if case let .tab(t) = p, dragTab == t { return false } // don't drop onto self
+        if case let .folder(f) = p, dragFolder == f { return false }
+        return true
+    }
+    override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation { updateDrop(s) }
+    override func draggingUpdated(_ s: NSDraggingInfo) -> NSDragOperation { updateDrop(s) }
+    override func draggingExited(_ s: NSDraggingInfo?) { dropLine.isHidden = true }
+    private func updateDrop(_ s: NSDraggingInfo) -> NSDragOperation {
+        guard accepts(s) else { dropLine.isHidden = true; return [] }
+        let before = insertBefore(s)
+        dropLine.isHidden = false
+        let t: CGFloat = 2
+        if dropHorizontal {
+            dropLine.frame = NSRect(x: before ? 0 : bounds.width - t, y: 2, width: t, height: bounds.height - 4)
+        } else {
+            dropLine.frame = NSRect(x: 2, y: before ? 0 : bounds.height - t, width: bounds.width - 4, height: t)
+        }
+        return .move
+    }
+    override func prepareForDragOperation(_ s: NSDraggingInfo) -> Bool { accepts(s) }
+    override func performDragOperation(_ s: NSDraggingInfo) -> Bool {
+        dropLine.isHidden = true
+        guard accepts(s), let p = payload(s), let handler = onDrop else { return false }
+        handler(p, insertBefore(s)); return true
+    }
 }
 
 /// Close button that highlights on hover.
@@ -48,6 +153,8 @@ final class BrowserTab {
 
     /// Sidebar section this tab belongs to.
     var kind: TabKind = .regular
+    /// If pinned, the folder it lives in (nil = ungrouped pinned).
+    var folderId: UUID?
     /// URL a restored favourite/pinned tab should load lazily on first activation.
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).
@@ -141,7 +248,9 @@ final class BrowserTab {
 
     func saved() -> SavedTab? {
         guard let u = currentURL?.absoluteString, !u.isEmpty, !u.hasPrefix("about:") else { return nil }
-        return SavedTab(url: u, title: title, kind: kind, faviconBase64: faviconData?.base64EncodedString())
+        return SavedTab(url: u, title: title, kind: kind,
+                        faviconBase64: faviconData?.base64EncodedString(),
+                        folderId: folderId?.uuidString)
     }
 
     func stop() {
