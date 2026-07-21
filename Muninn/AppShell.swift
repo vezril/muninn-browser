@@ -29,6 +29,7 @@ final class AppShell: NSObject {
     private var previewInjector: InjectionCoordinator?
     private var previewShowWork: DispatchWorkItem?
     private var previewCloseWork: DispatchWorkItem?
+    private var skipAddressComplete = false // suppress autocomplete right after a delete
     private var miniPlayer: MiniPlayerWindow?
     private var miniTabId: Int?
     private var currentToast: NSView?
@@ -397,7 +398,11 @@ final class AppShell: NSObject {
     /// Muninn's new-tab landing page: a search box (DuckDuckGo, or a typed URL) — a
     /// placeholder we can grow into a real start page later.
     private func loadLanding(_ tab: BrowserTab) {
-        tab.webView.loadHTMLString(Self.landingHTML, baseURL: URL(string: "https://duckduckgo.com/"))
+        let hosts = Array(history.rankedHosts().prefix(60))
+        let json = (try? JSONSerialization.data(withJSONObject: hosts))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let html = Self.landingHTML.replacingOccurrences(of: "__MUNINN_HOSTS__", with: json)
+        tab.webView.loadHTMLString(html, baseURL: URL(string: "https://duckduckgo.com/"))
     }
 
     private static let landingHTML = """
@@ -425,8 +430,37 @@ final class AppShell: NSObject {
         <input name="q" placeholder="Search or enter a URL" autofocus>
       </form>
       <script>
+        var HOSTS = __MUNINN_HOSTS__;
+        var input = document.querySelector('input');
+        var skip = false;
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Backspace' || e.key === 'Delete') { skip = true; }
+          else if (e.key === 'Tab' || e.key === 'ArrowRight') {
+            if (input.selectionStart !== input.selectionEnd) {
+              e.preventDefault(); input.setSelectionRange(input.value.length, input.value.length);
+            }
+          }
+        });
+        input.addEventListener('input', function () {
+          if (skip) { skip = false; return; }
+          var v = input.value;
+          if (!v || /\\s/.test(v) || input.selectionStart !== v.length) return;
+          var q = v.toLowerCase();
+          if (q.indexOf('https://') === 0) q = q.slice(8);
+          else if (q.indexOf('http://') === 0) q = q.slice(7);
+          if (q.indexOf('www.') === 0) q = q.slice(4);
+          if (!q || q.indexOf('/') >= 0) return;
+          for (var i = 0; i < HOSTS.length; i++) {
+            var h = HOSTS[i];
+            if (h.indexOf(q) === 0 && h !== q) {
+              var completed = v + h.slice(q.length);
+              input.value = completed; input.setSelectionRange(v.length, completed.length);
+              break;
+            }
+          }
+        });
         document.querySelector('form').addEventListener('submit', function (e) {
-          var q = document.querySelector('input').value.trim();
+          var q = input.value.trim();
           if (q && !/\\s/.test(q) && (/^https?:\\/\\//.test(q) || /^[\\w-]+(\\.[\\w-]+)+/.test(q))) {
             e.preventDefault();
             location.href = /^https?:\\/\\//.test(q) ? q : 'https://' + q;
@@ -1808,6 +1842,7 @@ final class AppShell: NSObject {
         addressField.placeholderString = "Search or enter a URL"
         addressField.target = self
         addressField.action = #selector(addressSubmitted)
+        addressField.delegate = self // inline history autocomplete
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.font = .systemFont(ofSize: 13)
 
@@ -2071,6 +2106,44 @@ final class AppShell: NSObject {
                     gate("E6-GATE bg-marker: \(hit)")
                 }
             }
+        }
+    }
+}
+
+extension AppShell: NSTextFieldDelegate {
+    /// Inline autocomplete: as you type in the address bar, complete to the best history host
+    /// (e.g. "you" → "youtube.com") with the suffix selected. Tab / → accepts it.
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === addressField else { return }
+        if skipAddressComplete { skipAddressComplete = false; return }
+        guard let editor = addressField.currentEditor() else { return }
+        let text = addressField.stringValue
+        let len = (text as NSString).length
+        let sel = editor.selectedRange
+        // Only when typing forward at the very end (not mid-string, not with a selection).
+        guard sel.length == 0, sel.location == len, !text.isEmpty else { return }
+        guard let completion = history.bestCompletion(for: text),
+              (completion as NSString).length > len else { return }
+        addressField.stringValue = completion
+        editor.selectedRange = NSRange(location: len, length: (completion as NSString).length - len)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === addressField else { return false }
+        switch selector {
+        case #selector(NSResponder.deleteBackward(_:)), #selector(NSResponder.deleteForward(_:)):
+            skipAddressComplete = true // don't re-suggest while deleting
+            return false
+        case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.moveRight(_:)):
+            // Accept a pending completion by collapsing the selection to the end.
+            if let editor = control.currentEditor(), editor.selectedRange.length > 0 {
+                let end = (addressField.stringValue as NSString).length
+                editor.selectedRange = NSRange(location: end, length: 0)
+                return true
+            }
+            return false
+        default:
+            return false
         }
     }
 }
