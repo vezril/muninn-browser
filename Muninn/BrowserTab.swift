@@ -54,6 +54,9 @@ final class HoverView: NSView {
 /// What a drag carries: a tab (by stable id) or a folder (by id).
 enum DragPayload { case tab(Int); case folder(UUID) }
 
+/// Where within a drop target the cursor is: reorder above/below, or drop *onto* it (split).
+enum DropZone { case before, after, onto }
+
 /// A tab-bar chip / folder header. A plain click selects (fired on mouse-up if no drag
 /// happened); the close button, being a subview, consumes its own clicks. Acts as a drag
 /// source (set `dragTab` or `dragFolder`) and a reorder-aware drop target (set `onDrop`,
@@ -69,8 +72,9 @@ final class TabChipView: NSView, NSDraggingSource {
     var dragTab: Int?          // draggable as a tab
     var dragFolder: UUID?      // draggable as a folder
     var dropHorizontal = false // favourites row: decide before/after by x, not y
-    /// (payload, insertBefore) — nil = not a drop target.
-    var onDrop: ((DragPayload, Bool) -> Void)?
+    var dropSupportsOnto = false // enable a center "drop onto" (split) zone
+    /// (payload, zone) — nil = not a drop target.
+    var onDrop: ((DragPayload, DropZone) -> Void)?
     /// Hover in/out (nil = no hover tracking) — used for workspace name peeks.
     var onHover: ((Bool) -> Void)?
 
@@ -140,9 +144,16 @@ final class TabChipView: NSView, NSDraggingSource {
         if let f = pb.string(forType: Self.folderType).flatMap({ UUID(uuidString: $0) }) { return .folder(f) }
         return nil
     }
-    private func insertBefore(_ s: NSDraggingInfo) -> Bool {
+    private func zone(_ s: NSDraggingInfo) -> DropZone {
         let p = convert(s.draggingLocation, from: nil)
-        return dropHorizontal ? (p.x < bounds.midX) : (p.y < bounds.midY)
+        if dropHorizontal { return p.x < bounds.midX ? .before : .after }
+        if dropSupportsOnto {
+            let h = bounds.height
+            if p.y < h / 3 { return .before }
+            if p.y > h * 2 / 3 { return .after }
+            return .onto
+        }
+        return p.y < bounds.midY ? .before : .after
     }
     private func accepts(_ s: NSDraggingInfo) -> Bool {
         guard onDrop != nil, let p = payload(s) else { return false }
@@ -152,24 +163,31 @@ final class TabChipView: NSView, NSDraggingSource {
     }
     override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation { updateDrop(s) }
     override func draggingUpdated(_ s: NSDraggingInfo) -> NSDragOperation { updateDrop(s) }
-    override func draggingExited(_ s: NSDraggingInfo?) { dropLine.isHidden = true }
+    override func draggingExited(_ s: NSDraggingInfo?) { dropLine.isHidden = true; layer?.borderWidth = 0 }
     private func updateDrop(_ s: NSDraggingInfo) -> NSDragOperation {
-        guard accepts(s) else { dropLine.isHidden = true; return [] }
-        let before = insertBefore(s)
-        dropLine.isHidden = false
+        guard accepts(s) else { dropLine.isHidden = true; layer?.borderWidth = 0; return [] }
+        let z = zone(s)
         let t: CGFloat = 2
-        if dropHorizontal {
-            dropLine.frame = NSRect(x: before ? 0 : bounds.width - t, y: 2, width: t, height: bounds.height - 4)
+        if z == .onto {
+            dropLine.isHidden = true
+            layer?.borderWidth = 2
+            layer?.borderColor = NSColor.controlAccentColor.cgColor
         } else {
-            dropLine.frame = NSRect(x: 2, y: before ? 0 : bounds.height - t, width: bounds.width - 4, height: t)
+            layer?.borderWidth = 0
+            dropLine.isHidden = false
+            if dropHorizontal {
+                dropLine.frame = NSRect(x: z == .before ? 0 : bounds.width - t, y: 2, width: t, height: bounds.height - 4)
+            } else {
+                dropLine.frame = NSRect(x: 2, y: z == .before ? 0 : bounds.height - t, width: bounds.width - 4, height: t)
+            }
         }
         return .move
     }
     override func prepareForDragOperation(_ s: NSDraggingInfo) -> Bool { accepts(s) }
     override func performDragOperation(_ s: NSDraggingInfo) -> Bool {
-        dropLine.isHidden = true
+        dropLine.isHidden = true; layer?.borderWidth = 0
         guard accepts(s), let p = payload(s), let handler = onDrop else { return false }
-        handler(p, insertBefore(s)); return true
+        handler(p, zone(s)); return true
     }
 }
 
@@ -209,6 +227,8 @@ final class BrowserTab {
     var folderId: UUID?
     /// The workspace this tab belongs to.
     var workspaceId: UUID?
+    /// Tabs sharing a split-group id render as one combined sidebar tab + a split view.
+    var splitGroupId: UUID?
     /// URL a restored favourite/pinned tab should load lazily on first activation.
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).
