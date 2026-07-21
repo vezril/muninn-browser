@@ -206,6 +206,10 @@ final class AppShell: NSObject {
                 self?.addressField.stringValue = wv.url?.absoluteString ?? ""
                 self?.backButton.isEnabled = wv.canGoBack
                 self?.forwardButton.isEnabled = wv.canGoForward
+                // Capture the fork `state` from the /authorize navigation (an in-page
+                // nav the onboarding "Sign in" does) and store f<state> — the fork the
+                // account app sends uses THIS state, not the onboarding URL's.
+                if let url = wv.url { self?.storeForkStateIfPresent(url) }
             }
         }
     }
