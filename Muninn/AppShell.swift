@@ -328,28 +328,24 @@ final class AppShell: NSObject {
         tabStack.spacing = 3
         tabStack.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(navRow)
+        sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under nav
         sidebar.addSubview(tabStack)
         NSLayoutConstraint.activate([
             navRow.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: Self.topInset),
             navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            tabStack.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 10),
+            addressField.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 8),
+            addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            addressField.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+            tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
         ])
 
-        // Right area: a slim address bar over the web content.
+        // Right area: just the web content (full height).
         webContainer.translatesAutoresizingMaskIntoConstraints = false
-        let addrRow = NSStackView(views: [addressField])
-        addrRow.orientation = .horizontal
-        addrRow.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
-        addrRow.translatesAutoresizingMaskIntoConstraints = false
-        let rightArea = NSView()
-        rightArea.translatesAutoresizingMaskIntoConstraints = false
-        rightArea.addSubview(addrRow); rightArea.addSubview(webContainer)
-
         let content = NSView()
         content.addSubview(sidebar)
-        content.addSubview(rightArea)
+        content.addSubview(webContainer)
         content.addSubview(revealButton) // floats top-left when the sidebar is hidden
         window.contentView = content
 
@@ -359,17 +355,10 @@ final class AppShell: NSObject {
             sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             sidebarWidthConstraint,
-            rightArea.topAnchor.constraint(equalTo: content.topAnchor),
-            rightArea.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            rightArea.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            rightArea.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            addrRow.topAnchor.constraint(equalTo: rightArea.topAnchor, constant: Self.topInset),
-            addrRow.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
-            addrRow.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
-            webContainer.topAnchor.constraint(equalTo: addrRow.bottomAnchor),
-            webContainer.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
-            webContainer.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
-            webContainer.bottomAnchor.constraint(equalTo: rightArea.bottomAnchor),
+            webContainer.topAnchor.constraint(equalTo: content.topAnchor),
+            webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            webContainer.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             revealButton.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.topInset),
             revealButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 8),
         ])
