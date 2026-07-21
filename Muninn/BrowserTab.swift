@@ -36,16 +36,18 @@ extension NSColor {
 /// A container view that reports when the cursor leaves it — used for the sidebar's
 /// hover-peek (slide back when the pointer moves off the floating sidebar).
 final class HoverView: NSView {
+    var onEntered: (() -> Void)?
     var onExited: (() -> Void)?
     private var area: NSTrackingArea?
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let a = area { removeTrackingArea(a); area = nil }
-        guard onExited != nil else { return }
+        guard onExited != nil || onEntered != nil else { return }
         let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                owner: self, userInfo: nil)
         addTrackingArea(a); area = a
     }
+    override func mouseEntered(with e: NSEvent) { onEntered?() }
     override func mouseExited(with e: NSEvent) { onExited?() }
 }
 
@@ -281,6 +283,16 @@ final class BrowserTab {
     func ensureLoaded() {
         guard !isLoaded, let u = pendingURL else { return }
         load(u)
+    }
+
+    /// Blank the page to free its memory but keep the tab (favourite/pinned) restorable —
+    /// it reloads lazily via `ensureLoaded()` the next time it's selected.
+    func unload() {
+        guard isLoaded else { return }
+        pendingURL = webView.url ?? pendingURL
+        isLoaded = false
+        faviconForURL = nil
+        if let blank = URL(string: "about:blank") { injector.load(blank) }
     }
 
     /// The tab's current or pending URL (for persistence).
