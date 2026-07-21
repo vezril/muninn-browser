@@ -73,6 +73,16 @@ Pure core → fixture-driven unit tests: one-off, DAILY/WEEKLY/MONTHLY, `INTERVA
 provider. Live gate (Calvin's real Proton share link) validates the end-to-end fetch + a real
 recurring meeting — the authoritative check, since headless can't see his calendar.
 
+## Resolved during Group 2
+
+- **Hand-rolled expander** (no vendored dep) — the common FREQ/BY* grammar plus EXDATE/RDATE, in
+  `Recurrence.swift`, covered by 19 fixture tests.
+- **Time zones via Foundation.** `TZID` is resolved with `TimeZone(identifier:)` against the IANA
+  tz database rather than parsing `VTIMEZONE` STANDARD/DAYLIGHT offset rules. Feeds (Proton
+  included) emit IANA zone names, so wall-clock → absolute conversion is correct and DST-aware for
+  free, with far less code. (If a feed ever ships a non-IANA `TZID`, it falls back to the parse
+  default zone.)
+
 ## Open decisions (resolve at build)
 
 - Persist the calendar list + tools-collapse in `SidebarState` vs a new `ToolsStore`

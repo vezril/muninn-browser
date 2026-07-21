@@ -9,14 +9,15 @@ Built one task-group at a time, with a gate between groups.
 - [x] Empty state ("Add a calendar in Settings → Calendars")
 - **Gate:** ✅ Calvin — "Works well" (2026-07-21)
 
-## Group 2 — ICS parser + recurrence (pure, the bulk)
-- [ ] `ICSParser`: line unfolding, property/param parsing, `VTIMEZONE` table, `VEVENT` model
-- [ ] `Recurrence`: `FREQ`/`INTERVAL`/`COUNT`/`UNTIL`/`BYDAY`/`BYMONTHDAY`/`BYMONTH`/`BYSETPOS`/`WKST`, `EXDATE`, `RDATE`
-- [ ] `NextEvent.resolve` over a rolling window; all-day + `DURATION` handling; TZID/UTC
-- [ ] `JoinLink` extraction (Meet / Zoom / Proton Meet / Teams)
-- [ ] Fixture `.ics` files + XCTests for each recurrence + join case (incl. a Proton export)
-- [ ] Decide: hand-rolled vs single-file vendored RRULE expander (record in design.md)
-- **Gate:** unit tests green across the fixture matrix
+## Group 2 — ICS parser + recurrence (pure, the bulk)  ✅
+- [x] `ICSParser`: line unfolding, property/param parsing, TZID via Foundation, `VEVENT` model
+- [x] `Recurrence`: `FREQ`/`INTERVAL`/`COUNT`/`UNTIL`/`BYDAY`/`BYMONTHDAY`/`BYMONTH`/`BYSETPOS`/`WKST`, `EXDATE`, `RDATE`
+- [x] `Recurrence.nextOccurrence` over a rolling window; all-day + `DURATION` handling; TZID/UTC
+- [x] `JoinLink` extraction (Meet / Zoom / Proton Meet / Teams / Webex / Whereby)
+- [x] 19 fixture XCTests (recurrence matrix + join cases) — all green
+- [x] Decided: hand-rolled expander; **TZID resolved via Foundation `TimeZone`** (IANA db) rather
+      than parsing VTIMEZONE offset rules — correct in practice, far less code (recorded in design.md)
+- **Gate:** ✅ unit tests green (19/19)
 
 ## Group 3 — Feed fetcher
 - [ ] `CalendarFeed`: `URLSession` GET, `webcal://`→`https://`, poll timer + focus refresh
