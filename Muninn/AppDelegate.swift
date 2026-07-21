@@ -4,6 +4,8 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shell: AppShell?
     private let aboutPanel = AboutPanelController()
+    /// External links that arrived before the shell was ready.
+    private var pendingURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Under XCTest the app is only a host for WKWebView; show no window
@@ -24,10 +26,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let shell = AppShell()
         self.shell = shell
         shell.present()
+        // Flush any links that arrived during launch (opened via an external link).
+        for url in pendingURLs { shell.openQuickLook(url) }
+        pendingURLs.removeAll()
+    }
+
+    /// External links (Muninn as default browser) open in a Quick Look window.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let web = urls.filter { $0.scheme == "http" || $0.scheme == "https" }
+        guard !web.isEmpty else { return }
+        if let shell { web.forEach { shell.openQuickLook($0) } }
+        else { pendingURLs.append(contentsOf: web) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    @objc private func newQuickLook() { shell?.openQuickLook(nil) }
+
+    @objc private func setAsDefaultBrowser() {
+        let bundleURL = Bundle.main.bundleURL
+        let ws = NSWorkspace.shared
+        ws.setDefaultApplication(at: bundleURL, toOpenURLsWithScheme: "https") { _ in }
+        ws.setDefaultApplication(at: bundleURL, toOpenURLsWithScheme: "http") { error in
+            Task { @MainActor in
+                let alert = NSAlert()
+                if let error {
+                    alert.messageText = "Couldn't set Muninn as the default browser"
+                    alert.informativeText = "\(error.localizedDescription)\n\nYou can set it manually in System Settings › Desktop & Dock › Default web browser."
+                } else {
+                    alert.messageText = "Muninn is now your default browser"
+                    alert.informativeText = "Links from other apps will open in a Quick Look window."
+                }
+                alert.runModal()
+            }
+        }
     }
 
     private func buildMenu() {
@@ -41,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         ).target = self
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Set as Default Browser…", action: #selector(setAsDefaultBrowser), keyEquivalent: "").target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(
             withTitle: "Quit Muninn",
             action: #selector(NSApplication.terminate(_:)),
@@ -48,6 +84,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+
+        // File menu — Quick Look (Little Muninn).
+        let fileMenuItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        let ql = fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "n")
+        ql.keyEquivalentModifierMask = [.command, .option]
+        ql.target = self
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
 
         // Edit menu — routes the standard editing shortcuts (Cmd A/C/V/X/Z) through the
         // responder chain to text fields and the web view.
