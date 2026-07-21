@@ -17,6 +17,8 @@ final class AppShell: NSObject {
     private var activeIndex = 0
     private var nextTabId = 0
     private let store = SidebarStore()
+    /// Pinned-tab folders (collapsible, renamable, colourable).
+    private var folders: [Folder] = []
     private var activeTab: BrowserTab { tabs[activeIndex] }
     private var activeWebView: WKWebView { activeTab.webView }
 
@@ -51,15 +53,19 @@ final class AppShell: NSObject {
             backing: .buffered, defer: false)
         super.init()
 
-        // First tab (regular), then restore saved favourites/pinned (lazy).
+        // First tab (regular), then restore saved favourites/pinned (lazy) + folders.
         tabs.append(makeTab())
-        for s in store.load() {
+        let saved = store.load()
+        folders = saved.folders
+        let folderIds = Set(folders.map { $0.id })
+        for s in saved.tabs {
             guard let url = URL(string: s.url) else { continue }
             let tab = makeTab()
             tab.kind = s.kind
             tab.pendingURL = url
             tab.setInitialTitle(s.title)
             tab.setInitialFavicon(base64: s.faviconBase64)
+            if let fid = s.folderId.flatMap(UUID.init), folderIds.contains(fid) { tab.folderId = fid }
             tabs.append(tab)
         }
 
@@ -177,14 +183,19 @@ final class AppShell: NSObject {
         rebuildTabBar()
     }
 
-    /// Persist favourites + pinned tabs (regular are session-only).
+    /// Persist favourites + pinned tabs and folder definitions (regular are session-only).
     private func persist() {
-        store.save(tabs.filter { $0.kind != .regular }.compactMap { $0.saved() })
+        // Drop empty folders that no pinned tab references (keeps state tidy).
+        let used = Set(tabs.filter { $0.kind == .pinned }.compactMap { $0.folderId })
+        folders.removeAll { !used.contains($0.id) }
+        store.save(SidebarState(tabs: tabs.filter { $0.kind != .regular }.compactMap { $0.saved() },
+                                folders: folders))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
         guard tabs.indices.contains(index) else { return }
         tabs[index].kind = kind
+        if kind != .pinned { tabs[index].folderId = nil } // only pinned tabs live in folders
         rebuildTabBar() // instant — the rest of the list doesn't flash
         // Fade the moved tab in at its new section (targeted, no whole-list blink).
         if let v = chipView(for: index) {
@@ -226,9 +237,187 @@ final class AppShell: NSObject {
         else { menu.addItem(item("Add to Favourites", #selector(favouriteTab(_:)))) }
         if kind == .pinned { menu.addItem(item("Unpin Tab", #selector(unclassifyTab(_:)))) }
         else if kind != .favourite { menu.addItem(item("Pin Tab", #selector(pinTab(_:)))) }
+
+        // Folders — available for any tab (moving a regular/favourite tab in pins it).
+        if kind != .favourite || !folders.isEmpty {
+            let move = NSMenuItem(title: "Add to Folder", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for folder in folders {
+                let m = NSMenuItem(title: folder.name, action: #selector(moveTabToFolder(_:)), keyEquivalent: "")
+                m.target = self; m.tag = index
+                m.representedObject = folder.id.uuidString
+                if tabs[index].folderId == folder.id { m.state = .on }
+                sub.addItem(m)
+            }
+            if !folders.isEmpty { sub.addItem(.separator()) }
+            sub.addItem(item("New Folder…", #selector(newFolderForTab(_:))))
+            move.submenu = sub
+            menu.addItem(move)
+            if tabs[index].folderId != nil {
+                menu.addItem(item("Remove from Folder", #selector(removeTabFromFolder(_:))))
+            }
+        }
+
         menu.addItem(.separator())
         menu.addItem(item("Close Tab", #selector(closeTabMenu(_:))))
         return menu
+    }
+
+    // MARK: - folder actions
+
+    @objc private func moveTabToFolder(_ s: NSMenuItem) {
+        guard tabs.indices.contains(s.tag), let idStr = s.representedObject as? String,
+              let fid = UUID(uuidString: idStr) else { return }
+        tabs[s.tag].kind = .pinned
+        tabs[s.tag].folderId = fid
+        rebuildTabBar(); persist()
+    }
+
+    @objc private func removeTabFromFolder(_ s: NSMenuItem) {
+        guard tabs.indices.contains(s.tag) else { return }
+        tabs[s.tag].folderId = nil
+        rebuildTabBar(); persist()
+    }
+
+    @objc private func newFolderForTab(_ s: NSMenuItem) {
+        guard tabs.indices.contains(s.tag) else { return }
+        guard let name = promptForText(title: "New Folder", message: "Name this folder:",
+                                       initial: "Folder") else { return }
+        let folder = Folder(name: name, colorIndex: folders.count % Folder.palette.count)
+        folders.append(folder)
+        tabs[s.tag].kind = .pinned
+        tabs[s.tag].folderId = folder.id
+        rebuildTabBar(); persist()
+    }
+
+    private func folderIndex(_ id: UUID) -> Int? { folders.firstIndex { $0.id == id } }
+    private func tabIndex(id: Int) -> Int? { tabs.firstIndex { $0.id == id } }
+
+    // MARK: drag & drop (reorder + move between sections/folders)
+
+    /// A chip is a drag source (its stable tab id) and a drop target that reorders/moves
+    /// the dropped tab to sit next to this one — inheriting this chip's section.
+    private func configureDrag(_ chip: TabChipView, tab: BrowserTab, horizontal: Bool = false) {
+        chip.dragTab = tab.id
+        chip.dropHorizontal = horizontal
+        chip.onDrop = { [weak self, weak tab] payload, before in
+            guard let self, let tab, case let .tab(draggedId) = payload else { return }
+            self.moveTab(draggedId, kind: tab.kind, folderId: tab.folderId, nextTo: tab.id, before: before)
+        }
+    }
+
+    /// Move a tab to a section (kind + optional folder) and position it next to `targetId`
+    /// (or at the end when nil). Preserves the active tab across the reorder.
+    private func moveTab(_ id: Int, kind: TabKind, folderId: UUID?, nextTo targetId: Int?, before: Bool) {
+        guard id != targetId, let from = tabIndex(id: id) else { return }
+        let active = activeTab
+        let tab = tabs.remove(at: from)
+        tab.kind = kind
+        tab.folderId = (kind == .pinned) ? folderId : nil
+        var insertAt = tabs.count
+        if let targetId, let t = tabIndex(id: targetId) { insertAt = before ? t : t + 1 }
+        tabs.insert(tab, at: min(max(insertAt, 0), tabs.count))
+        if let ai = tabs.firstIndex(where: { $0 === active }) { activeIndex = ai }
+        rebuildTabBar(); persist()
+    }
+
+    /// Reorder a folder next to another folder.
+    private func moveFolder(_ id: UUID, nextTo targetId: UUID, before: Bool) {
+        guard id != targetId, let from = folderIndex(id) else { return }
+        let f = folders.remove(at: from)
+        let t = folderIndex(targetId) ?? folders.count
+        folders.insert(f, at: min(max(before ? t : t + 1, 0), folders.count))
+        rebuildTabBar(); persist()
+    }
+
+    /// First tab id in a section (for placing header/edge drops sensibly), or nil.
+    private func firstTabId(kind: TabKind, folderId: UUID?) -> Int? {
+        tabs.first { $0.kind == kind && $0.folderId == folderId }?.id
+    }
+
+    /// The folder swatch as a solid colour (for the coloured header background).
+    static func folderColor(_ index: Int) -> NSColor {
+        let rgb = Folder.palette[min(index, Folder.palette.count - 1)].rgb
+        return NSColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+    }
+    /// Black or white, whichever reads better on the given colour.
+    private static func contrastingText(_ c: NSColor) -> NSColor {
+        let s = c.usingColorSpace(.sRGB) ?? c
+        let l = 0.299 * s.redComponent + 0.587 * s.greenComponent + 0.114 * s.blueComponent
+        return l > 0.62 ? .black : .white
+    }
+
+    @objc private func renameFolder(_ s: NSMenuItem) {
+        guard let id = (s.representedObject as? String).flatMap(UUID.init), let i = folderIndex(id) else { return }
+        guard let name = promptForText(title: "Rename Folder", message: "Folder name:", initial: folders[i].name)
+        else { return }
+        folders[i].name = name
+        rebuildTabBar(); persist()
+    }
+
+    @objc private func recolorFolder(_ s: NSMenuItem) {
+        guard let id = (s.representedObject as? String).flatMap(UUID.init), let i = folderIndex(id) else { return }
+        folders[i].colorIndex = s.tag
+        rebuildTabBar(); persist()
+    }
+
+    @objc private func deleteFolder(_ s: NSMenuItem) {
+        guard let id = (s.representedObject as? String).flatMap(UUID.init) else { return }
+        for t in tabs where t.folderId == id { t.folderId = nil } // pins survive, ungrouped
+        folders.removeAll { $0.id == id }
+        rebuildTabBar(); persist()
+    }
+
+    /// Right-click menu for a folder header row.
+    private func folderContextMenu(_ id: UUID) -> NSMenu {
+        let menu = NSMenu()
+        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+            let m = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            m.target = self; m.representedObject = id.uuidString; return m
+        }
+        menu.addItem(item("Rename Folder…", #selector(renameFolder(_:))))
+        let color = NSMenuItem(title: "Colour", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for (idx, swatch) in Folder.palette.enumerated() {
+            let m = NSMenuItem(title: swatch.name, action: #selector(recolorFolder(_:)), keyEquivalent: "")
+            m.target = self; m.tag = idx; m.representedObject = id.uuidString
+            m.image = Self.swatchImage(idx)
+            if folderIndex(id).map({ folders[$0].colorIndex == idx }) == true { m.state = .on }
+            sub.addItem(m)
+        }
+        color.submenu = sub
+        menu.addItem(color)
+        menu.addItem(.separator())
+        menu.addItem(item("Delete Folder", #selector(deleteFolder(_:))))
+        return menu
+    }
+
+    /// A small round colour swatch for the palette menu / folder header.
+    private static func swatchImage(_ colorIndex: Int) -> NSImage {
+        let rgb = Folder.palette[min(colorIndex, Folder.palette.count - 1)].rgb
+        let size = NSSize(width: 12, height: 12)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+        img.unlockFocus()
+        return img
+    }
+
+    /// Simple modal text prompt (folder name / rename). Returns nil on cancel/empty.
+    private func promptForText(title: String, message: String, initial: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = initial
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
     }
 
     @objc func closeActiveTab() { closeTab(activeIndex) }
@@ -272,13 +461,118 @@ final class AppShell: NSObject {
         let regs = tabs.enumerated().filter { $0.element.kind == .regular }
 
         if !favs.isEmpty { tabStack.addArrangedSubview(favouritesRow(favs)) }
-        for (i, tab) in pins { tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex)) }
-        if !favs.isEmpty || !pins.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
+
+        // Ungrouped pinned tabs first, then each folder (header + its members when open).
+        for (i, tab) in pins where tab.folderId == nil {
+            tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
+        }
+        for folder in folders {
+            let members = pins.filter { $0.element.folderId == folder.id }
+            tabStack.addArrangedSubview(folderHeaderRow(folder, count: members.count))
+            if !folder.collapsed {
+                for (i, tab) in members {
+                    let chip = makeTabChip(tab, index: i, active: i == activeIndex, indented: true)
+                    tabStack.addArrangedSubview(indentWrap(chip, by: 16))
+                }
+            }
+        }
+
+        if !favs.isEmpty || !pins.isEmpty || !folders.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
         for (i, tab) in regs { tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex)) }
         tabStack.addArrangedSubview(newTabRow())
     }
 
+    /// Wrap an indented chip so it sits inset under a folder header while the row still
+    /// spans the sidebar width (keeps the leading-aligned stack tidy).
+    private func indentWrap(_ chip: NSView, by inset: CGFloat) -> NSView {
+        let c = NSView()
+        c.translatesAutoresizingMaskIntoConstraints = false
+        c.addSubview(chip)
+        NSLayoutConstraint.activate([
+            c.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+            chip.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: inset),
+            chip.topAnchor.constraint(equalTo: c.topAnchor),
+            chip.bottomAnchor.constraint(equalTo: c.bottomAnchor),
+        ])
+        return c
+    }
+
+    /// A folder header: fully tinted with the folder's colour — disclosure chevron +
+    /// name + member count. Click toggles; right-click = rename/colour/delete; a drop
+    /// target for moving tabs in.
+    private func folderHeaderRow(_ folder: Folder, count: Int) -> NSView {
+        let bg = Self.folderColor(folder.colorIndex)
+        let fg = Self.contrastingText(bg)
+        let row = TabChipView()
+        row.onSelect = { [weak self] in self?.toggleFolder(id: folder.id) }
+        row.menu = folderContextMenu(folder.id)
+        row.dragFolder = folder.id // drag the header to reorder folders
+        row.onDrop = { [weak self] payload, before in
+            guard let self else { return }
+            switch payload {
+            case .tab(let id): // drop a tab onto the header → into this folder (at top)
+                self.moveTab(id, kind: .pinned, folderId: folder.id,
+                             nextTo: self.firstTabId(kind: .pinned, folderId: folder.id), before: true)
+            case .folder(let fid): // drop a folder onto the header → reorder folders
+                self.moveFolder(fid, nextTo: folder.id, before: before)
+            }
+        }
+        row.wantsLayer = true
+        row.layer?.cornerRadius = 7
+        row.layer?.backgroundColor = bg.cgColor
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        row.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        let chevron = NSImageView(image: NSImage(systemSymbolName: folder.collapsed ? "chevron.right" : "chevron.down",
+                                                 accessibilityDescription: nil)!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))!)
+        chevron.contentTintColor = fg
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+
+        let name = NSTextField(labelWithString: folder.name)
+        name.font = .systemFont(ofSize: 11, weight: .semibold)
+        name.textColor = fg
+        name.lineBreakMode = .byTruncatingTail
+        name.translatesAutoresizingMaskIntoConstraints = false
+
+        let badge = NSTextField(labelWithString: "\(count)")
+        badge.font = .systemFont(ofSize: 10, weight: .medium)
+        badge.textColor = fg.withAlphaComponent(0.75)
+        badge.translatesAutoresizingMaskIntoConstraints = false
+
+        row.addSubview(chevron); row.addSubview(name); row.addSubview(badge)
+        NSLayoutConstraint.activate([
+            chevron.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 9),
+            chevron.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 12),
+            name.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 7),
+            name.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            badge.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 6),
+            badge.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+            badge.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
+        return row
+    }
+
+    private func toggleFolder(id: UUID) {
+        guard let i = folderIndex(id) else { return }
+        folders[i].collapsed.toggle()
+        rebuildTabBar(); persist()
+    }
+
     private func newTabRow() -> NSView {
+        // A drop here moves the dragged tab to the regular section (at the end) — the way
+        // to pull a tab out of favourites/pins/folders when no regular tab is around.
+        let row = TabChipView()
+        row.onDrop = { [weak self] payload, _ in
+            guard let self, case let .tab(id) = payload else { return }
+            self.moveTab(id, kind: .regular, folderId: nil, nextTo: nil, before: false)
+        }
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        row.heightAnchor.constraint(equalToConstant: 30).isActive = true
+
         let plus = NSButton(title: " New Tab",
                             image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")!,
                             target: self, action: #selector(newTab))
@@ -288,9 +582,13 @@ final class AppShell: NSObject {
         plus.contentTintColor = .secondaryLabelColor
         plus.alignment = .left
         plus.translatesAutoresizingMaskIntoConstraints = false
-        plus.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
-        plus.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        return plus
+        row.addSubview(plus)
+        NSLayoutConstraint.activate([
+            plus.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            plus.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            plus.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
+        return row
     }
 
     private func separatorLine() -> NSView {
@@ -324,6 +622,7 @@ final class AppShell: NSObject {
         icon.index = index
         icon.onSelect = { [weak self] in self?.selectTab(index) }
         icon.menu = tabContextMenu(index)
+        configureDrag(icon, tab: tab, horizontal: true) // reorder favourites by x
         icon.wantsLayer = true
         icon.layer?.cornerRadius = 9
         icon.layer?.backgroundColor = tab.avatarColor.cgColor
@@ -366,18 +665,21 @@ final class AppShell: NSObject {
     }
 
     /// One tab row: title (left) + `×` (right) INSIDE a single full-width, clickable pill.
-    private func makeTabChip(_ tab: BrowserTab, index: Int, active: Bool) -> NSView {
+    /// `indented` insets it under a folder header.
+    private func makeTabChip(_ tab: BrowserTab, index: Int, active: Bool, indented: Bool = false) -> NSView {
         let chip = TabChipView()
         chip.index = index
         chip.onSelect = { [weak self] in self?.selectTab(index) }
         chip.menu = tabContextMenu(index) // right-click: pin / favourite / close
+        configureDrag(chip, tab: tab)      // drag into/out of folders
         chip.wantsLayer = true
         chip.layer?.cornerRadius = 7
         chip.layer?.backgroundColor = active
             ? NSColor.controlAccentColor.withAlphaComponent(0.20).cgColor
             : NSColor.clear.cgColor
         chip.translatesAutoresizingMaskIntoConstraints = false
-        chip.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        let inset: CGFloat = indented ? 16 : 0
+        chip.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16 - inset).isActive = true
         chip.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         // Favicon (or a globe placeholder) in front of the title.
