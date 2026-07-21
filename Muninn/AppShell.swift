@@ -24,7 +24,12 @@ final class AppShell: NSObject {
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
-    private let tabBar = NSStackView()
+    private let sidebar = NSView()
+    private let tabStack = NSStackView()
+    private var sidebarWidthConstraint: NSLayoutConstraint!
+    private var sidebarOpen = true
+    private let toggleButton = NSButton()
+    private static let sidebarWidth: CGFloat = 230
     private let webContainer = NSView()
     private var keyMonitor: Any?
     /// Only during an explicit sign-in do we let the extension's `onInstalled` →
@@ -193,27 +198,26 @@ final class AppShell: NSObject {
     }
 
     private func rebuildTabBar() {
-        tabBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for (i, tab) in tabs.enumerated() {
-            tabBar.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
+            tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
         }
-        // New-tab button.
-        let plus = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")!,
+        // Full-width "New Tab" row at the bottom of the list.
+        let plus = NSButton(title: " New Tab",
+                            image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")!,
                             target: self, action: #selector(newTab))
+        plus.imagePosition = .imageLeading
         plus.isBordered = false
+        plus.font = .systemFont(ofSize: 12)
         plus.contentTintColor = .secondaryLabelColor
+        plus.alignment = .left
         plus.translatesAutoresizingMaskIntoConstraints = false
-        plus.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        plus.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        tabBar.addArrangedSubview(plus)
-        // Trailing spacer keeps tabs left-aligned (absorbs remaining width).
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        tabBar.addArrangedSubview(spacer)
+        plus.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        plus.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        tabStack.addArrangedSubview(plus)
     }
 
-    /// One tab chip: title (left) + `×` (right) INSIDE a single rounded, clickable pill.
+    /// One tab row: title (left) + `×` (right) INSIDE a single full-width, clickable pill.
     private func makeTabChip(_ tab: BrowserTab, index: Int, active: Bool) -> NSView {
         let chip = TabChipView()
         chip.index = index
@@ -224,8 +228,8 @@ final class AppShell: NSObject {
             ? NSColor.controlAccentColor.withAlphaComponent(0.20).cgColor
             : NSColor.clear.cgColor
         chip.translatesAutoresizingMaskIntoConstraints = false
-        chip.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        chip.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        chip.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        chip.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         let title = NSTextField(labelWithString: tab.title)
         title.font = .systemFont(ofSize: 12, weight: active ? .semibold : .regular)
@@ -293,51 +297,79 @@ final class AppShell: NSObject {
     // MARK: - UI
 
     private func buildUI() {
+        configureButton(toggleButton, symbol: "sidebar.left", action: #selector(toggleSidebar))
         configureButton(backButton, symbol: "chevron.backward", action: #selector(goBack))
         configureButton(forwardButton, symbol: "chevron.forward", action: #selector(goForward))
         configureButton(reloadButton, symbol: "arrow.clockwise", action: #selector(reload))
 
-        addressField.placeholderString = "Enter a URL"
+        addressField.placeholderString = "Search or enter a URL"
         addressField.target = self
         addressField.action = #selector(addressSubmitted)
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.font = .systemFont(ofSize: 13)
 
-        let toolbar = NSStackView(views: [backButton, forwardButton, reloadButton, addressField])
+        let toolbar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton, addressField])
         toolbar.orientation = .horizontal
         toolbar.spacing = 6
         toolbar.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
         toolbar.translatesAutoresizingMaskIntoConstraints = false
         toolbar.setHuggingPriority(.defaultLow, for: .horizontal)
 
-        tabBar.orientation = .horizontal
-        tabBar.spacing = 4
-        tabBar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 0, right: 8)
-        tabBar.alignment = .centerY
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
-        tabBar.setHuggingPriority(.defaultLow, for: .horizontal)
+        // Left sidebar: a vertical tab list (+ new-tab button), collapsible.
+        sidebar.wantsLayer = true
+        sidebar.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
+        sidebar.layer?.masksToBounds = true // clip content when collapsed to width 0
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        tabStack.orientation = .vertical
+        tabStack.alignment = .leading
+        tabStack.spacing = 3
+        tabStack.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(tabStack)
+        NSLayoutConstraint.activate([
+            tabStack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 8),
+            tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+        ])
 
         webContainer.translatesAutoresizingMaskIntoConstraints = false
+        let rightArea = NSView()
+        rightArea.translatesAutoresizingMaskIntoConstraints = false
+        rightArea.addSubview(toolbar); rightArea.addSubview(webContainer)
 
         let content = NSView()
-        content.addSubview(tabBar)
-        content.addSubview(toolbar)
-        content.addSubview(webContainer)
+        content.addSubview(sidebar)
+        content.addSubview(rightArea)
         window.contentView = content
 
+        sidebarWidthConstraint = sidebar.widthAnchor.constraint(equalToConstant: Self.sidebarWidth)
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: content.topAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            toolbar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            sidebar.topAnchor.constraint(equalTo: content.topAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            sidebarWidthConstraint,
+            rightArea.topAnchor.constraint(equalTo: content.topAnchor),
+            rightArea.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            rightArea.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            rightArea.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            toolbar.topAnchor.constraint(equalTo: rightArea.topAnchor),
+            toolbar.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
             webContainer.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
-            webContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            webContainer.leadingAnchor.constraint(equalTo: rightArea.leadingAnchor),
+            webContainer.trailingAnchor.constraint(equalTo: rightArea.trailingAnchor),
+            webContainer.bottomAnchor.constraint(equalTo: rightArea.bottomAnchor),
         ])
         rebuildTabBar()
+    }
+
+    @objc private func toggleSidebar() {
+        sidebarOpen.toggle()
+        tabStack.isHidden = !sidebarOpen
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.allowsImplicitAnimation = true
+            sidebarWidthConstraint.animator().constant = sidebarOpen ? Self.sidebarWidth : 0
+        }
     }
 
     private func configureButton(_ b: NSButton, symbol: String, action: Selector) {
