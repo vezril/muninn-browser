@@ -34,9 +34,17 @@ final class AppShell: NSObject {
         super.init()
 
         // The auth-fork is background-driven: background.js opens the fork URL via
-        // tabs.create/windows.create. Route those to the shell's one tab.
+        // tabs.create/windows.create. Route those to the shell's one tab, and — the
+        // fork-init the popup normally does — store the fork `localState` under
+        // `storage.session["f"+state]` for the URL's `state` nonce, so background's
+        // consume finds it (else "Invalid fork state"). background.js generates the
+        // onboarding URL's state but never stores f<state>; the popup does, so we do.
         var didOpen = false
-        broker.onOpenURL = { [weak self] url, _ in didOpen = true; self?.page.load(url) }
+        broker.onOpenURL = { [weak self] url, _ in
+            didOpen = true
+            self?.storeForkStateIfPresent(url)
+            self?.page.load(url)
+        }
 
         // E6 human-gate observation: payload-free signals written to a FLUSHED
         // file (stdout is block-buffered in a windowed app and won't appear until
@@ -92,34 +100,44 @@ final class AppShell: NSObject {
     func present() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        // Sign-in paths (gate-controlled). MUNINN_FORKINIT: the minimal fork-init shim
-        // (retire Risk 1 without the full popup UI). MUNINN_POPUP: the real popup.
-        if ProcessInfo.processInfo.environment["MUNINN_FORKINIT"] != nil { forkInit() }
-        else if ProcessInfo.processInfo.environment["MUNINN_POPUP"] != nil { openPopup() }
-        else { navigate(to: "https://account.proton.me") }
-    }
-
-    /// Minimal auth-fork initiation (what Proton's `popup.js` "Sign in" does, hand-rolled):
-    /// generate a random `state` nonce, store the fork `localState` under
-    /// `storage.session["f"+state]` (the SAME `ExtensionStorage` background.js reads on
-    /// consume), and navigate to the `/authorize` fork endpoint. The account login then
-    /// forks and messages the extension; consume finds `f<state>` → `pullFork` (via the
-    /// native fetch proxy). No crypto key in the URL — the state is a plain nonce and the
-    /// key/keyPassword come from the account app's fork message.
-    func forkInit() {
-        // MUNINN_FRESH: wipe Muninn's OWN default website data (cookies/session for the
-        // page tab — NOT the system browser) so /authorize does a fresh login → fork,
-        // instead of short-circuiting on a cached Proton session.
-        if ProcessInfo.processInfo.environment["MUNINN_FRESH"] != nil {
-            let types = WKWebsiteDataStore.allWebsiteDataTypes()
-            WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
-                self?.doForkInit()
-            }
-        } else {
-            doForkInit()
+        // MUNINN_FRESH: wipe Muninn's OWN default website data (page-tab cookies for
+        // account.proton.me — NOT the system browser) so the account login is fresh and
+        // actually forks, instead of short-circuiting on a cached Proton session.
+        let env = ProcessInfo.processInfo.environment
+        func proceed() {
+            if env["MUNINN_FORKINIT"] != nil { doForkInit() }
+            else if env["MUNINN_POPUP"] != nil { openPopup() }
+            // Default sign-in: background's onInstalled opens the onboarding URL (with a
+            // `state`), and onOpenURL stores f<state> so the fork consume matches. Land
+            // on account.proton.me meanwhile so the tab isn't blank.
+            else { navigate(to: "https://account.proton.me") }
         }
+        if env["MUNINN_FRESH"] != nil {
+            WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                                                    modifiedSince: .distantPast) { proceed() }
+        } else { proceed() }
     }
 
+    /// Store the fork `localState` under `storage.session["f"+state]` for the `state`
+    /// nonce carried by a background-opened fork/onboarding URL (top-level `state` query
+    /// item, or nested inside `loginParams`). This is the fork-init the popup does; our
+    /// onInstalled→onboarding path skipped it → "Invalid fork state" on consume.
+    func storeForkStateIfPresent(_ url: URL) {
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = comps.queryItems else { return }
+        var state = items.first(where: { $0.name == "state" })?.value
+        if state == nil, let lp = items.first(where: { $0.name == "loginParams" })?.value {
+            for pair in lp.split(separator: "&") {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2, kv[0] == "state" { state = String(kv[1]) }
+            }
+        }
+        guard let s = state, !s.isEmpty else { return }
+        broker.storage.set(.session, ["f\(s)": "{}"])
+    }
+
+    /// Alternate: hand-rolled `/authorize` fork-init (MUNINN_FORKINIT). Kept for the
+    /// popup-style path; the default onboarding path above is the one that fires a fork.
     private func doForkInit() {
         let bytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
         let nonce = Data(bytes).base64EncodedString()
