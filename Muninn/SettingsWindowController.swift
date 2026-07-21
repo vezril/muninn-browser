@@ -10,9 +10,10 @@ final class SettingsWindowController: NSWindowController {
     private var navButtons: [NSButton] = []
     private let sections: [(title: String, icon: String)] = [
         ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
-        ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
+        ("Calendars", "calendar"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
     private let routingList = NSStackView()
+    private let calendarList = NSStackView()
 
     // Profiles state
     private var selectedProfileId: UUID?
@@ -94,7 +95,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, routingView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, calendarsView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -519,6 +520,124 @@ final class SettingsWindowController: NSWindowController {
         let spaces = host.settingsWorkspacePicker()
         guard s.indexOfSelectedItem < spaces.count else { return }
         host.settingsUpdateRule(id, workspaceId: spaces[s.indexOfSelectedItem].id)
+    }
+
+    // MARK: Calendars (Live Calendars)
+
+    private let leadOptions = [1, 5, 10, 15, 30]
+
+    private func calendarsView() -> NSView {
+        let v = NSView()
+        let title = heading("Live Calendars")
+        let hint = NSTextField(labelWithString: "Paste a Proton Calendar read-only share link (Settings → Calendars → Share). The next event and a Join button show in the Tools sidebar. Links are fetched read-only — no login.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 3
+        hint.preferredMaxLayoutWidth = 620
+
+        calendarList.orientation = .vertical
+        calendarList.alignment = .leading
+        calendarList.spacing = 12
+        calendarList.translatesAutoresizingMaskIntoConstraints = false
+
+        let add = NSButton(title: "Add Calendar", image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)!, target: self, action: #selector(addCalendar))
+        add.imagePosition = .imageLeading; add.bezelStyle = .rounded
+
+        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let doc = NSView(); doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(calendarList); scroll.documentView = doc
+
+        for s in [title, hint, add, scroll] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            add.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
+            add.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            scroll.topAnchor.constraint(equalTo: add.bottomAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            scroll.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -24),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            calendarList.topAnchor.constraint(equalTo: doc.topAnchor, constant: 2),
+            calendarList.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            calendarList.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            calendarList.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -2),
+        ])
+        rebuildCalendarList()
+        return v
+    }
+
+    private func rebuildCalendarList() {
+        calendarList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let host else { return }
+        let cals = host.settingsLiveCalendars()
+        if cals.isEmpty {
+            let empty = NSTextField(labelWithString: "No calendars yet — add one to see your next event.")
+            empty.font = .systemFont(ofSize: 12); empty.textColor = .tertiaryLabelColor
+            calendarList.addArrangedSubview(empty)
+            return
+        }
+        for c in cals { calendarList.addArrangedSubview(calendarRow(c)) }
+    }
+
+    /// A calendar card: line 1 = name + lead-time + remove; line 2 = the ICS URL field.
+    private func calendarRow(_ c: LiveCalendar) -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 8
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = NSColor.separatorColor.cgColor
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let id = NSUserInterfaceItemIdentifier(c.id.uuidString)
+
+        let name = NSTextField(string: c.name)
+        name.placeholderString = "Name"; name.font = .systemFont(ofSize: 13)
+        name.identifier = id; name.target = self; name.action = #selector(calendarNameChanged(_:))
+
+        let leadLabel = NSTextField(labelWithString: "Join")
+        leadLabel.font = .systemFont(ofSize: 12); leadLabel.textColor = .secondaryLabelColor
+        let lead = NSPopUpButton()
+        lead.addItems(withTitles: leadOptions.map { "\($0) min before" })
+        lead.selectItem(at: leadOptions.firstIndex(of: c.leadTimeMinutes) ?? 1)
+        lead.identifier = id; lead.target = self; lead.action = #selector(calendarLeadChanged(_:))
+
+        let remove = NSButton(image: NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove")!, target: self, action: #selector(removeCalendar(_:)))
+        remove.bezelStyle = .rounded; remove.contentTintColor = .systemRed; remove.identifier = id
+
+        let url = NSTextField(string: c.icsURL)
+        url.placeholderString = "https://…  (Proton Calendar share link)"; url.font = .systemFont(ofSize: 12)
+        url.identifier = id; url.target = self; url.action = #selector(calendarURLChanged(_:))
+
+        for s in [name, leadLabel, lead, remove, url] { s.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(s) }
+        NSLayoutConstraint.activate([
+            name.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            name.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            name.widthAnchor.constraint(equalToConstant: 160),
+            leadLabel.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            leadLabel.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 12),
+            lead.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            lead.leadingAnchor.constraint(equalTo: leadLabel.trailingAnchor, constant: 6),
+            remove.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            remove.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            url.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 8),
+            url.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            url.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            url.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+        ])
+        return card
+    }
+
+    private func calId(_ s: NSView) -> UUID? { s.identifier.flatMap { UUID(uuidString: $0.rawValue) } }
+    @objc private func addCalendar() { host?.settingsAddCalendar(); rebuildCalendarList() }
+    @objc private func removeCalendar(_ s: NSButton) { if let id = calId(s) { host?.settingsRemoveCalendar(id); rebuildCalendarList() } }
+    @objc private func calendarNameChanged(_ s: NSTextField) { if let id = calId(s) { host?.settingsUpdateCalendar(id) { $0.name = s.stringValue } } }
+    @objc private func calendarURLChanged(_ s: NSTextField) { if let id = calId(s) { host?.settingsUpdateCalendar(id) { $0.icsURL = s.stringValue } } }
+    @objc private func calendarLeadChanged(_ s: NSPopUpButton) {
+        guard let id = calId(s), s.indexOfSelectedItem < leadOptions.count else { return }
+        host?.settingsUpdateCalendar(id) { $0.leadTimeMinutes = self.leadOptions[s.indexOfSelectedItem] }
     }
 
     // MARK: Advanced

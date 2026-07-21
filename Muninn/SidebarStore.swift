@@ -93,6 +93,19 @@ struct RoutingRule: Codable, Identifiable {
     }
 }
 
+/// A Live Calendar the user configured: a name, a read-only Proton ICS share URL, and how many
+/// minutes before an event the Join button should appear.
+struct LiveCalendar: Codable, Identifiable {
+    var id: UUID
+    var name: String
+    var icsURL: String
+    var leadTimeMinutes: Int
+
+    init(id: UUID = UUID(), name: String = "", icsURL: String = "", leadTimeMinutes: Int = 5) {
+        self.id = id; self.name = name; self.icsURL = icsURL; self.leadTimeMinutes = leadTimeMinutes
+    }
+}
+
 /// What the sidebar persists: saved tabs, folder definitions, workspaces, and the active one.
 struct SidebarState: Codable {
     var tabs: [SavedTab] = []
@@ -101,6 +114,10 @@ struct SidebarState: Codable {
     var activeWorkspace: String?
     var profiles: [Profile] = []
     var routingRules: [RoutingRule] = []
+    /// Whether the right-side Tools sidebar is shown.
+    var toolsSidebarOpen: Bool = false
+    /// Configured Live Calendars (Tools sidebar).
+    var liveCalendars: [LiveCalendar] = []
 }
 
 /// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in

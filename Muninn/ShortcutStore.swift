@@ -23,7 +23,7 @@ struct Shortcut: Codable, Equatable {
 /// The remappable actions (workspace-switching ⌃1…⌃9 is fixed and not listed here).
 enum ShortcutAction: String, CaseIterable {
     case commandBar, newTab, quickLook, closeTab, reopenClosed, togglePin
-    case focusAddress, reload, copyURL, copyMarkdown, clearUnpinned, settings
+    case focusAddress, reload, copyURL, copyMarkdown, clearUnpinned, settings, toolsSidebar
 
     var title: String {
         switch self {
@@ -39,6 +39,7 @@ enum ShortcutAction: String, CaseIterable {
         case .copyMarkdown: return "Copy as Markdown"
         case .clearUnpinned:return "Clear Unpinned Tabs"
         case .settings:     return "Settings"
+        case .toolsSidebar: return "Toggle Tools Sidebar"
         }
     }
 
@@ -57,6 +58,7 @@ enum ShortcutAction: String, CaseIterable {
         case .copyMarkdown: return s("c", [.command, .shift, .option])
         case .clearUnpinned:return s("k", [.command, .shift])
         case .settings:     return s(",", [.command])
+        case .toolsSidebar: return s("t", [.command, .option])
         }
     }
 }
