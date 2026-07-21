@@ -23,6 +23,8 @@ final class AppShell: NSObject {
     private var palette: CommandPalette?
     private var quickLooks: [QuickLookWindow] = []
     private var nextQuickLookId = 0
+    private var peek: PeekOverlay?
+    private var nextPeekId = 0
     private var currentToast: NSView?
     private var toastDismiss: DispatchWorkItem?
     private var toastShareItems: [Any] = []
@@ -107,6 +109,7 @@ final class AppShell: NSObject {
             let tab = makeTab()
             tab.kind = s.kind
             tab.pendingURL = url
+            tab.homeURL = url // anchored site for Peek (restored pinned/favourite)
             tab.setInitialTitle(s.title)
             tab.setInitialFavicon(base64: s.faviconBase64)
             if let fid = s.folderId.flatMap(UUID.init), folderIds.contains(fid) { tab.folderId = fid }
@@ -169,7 +172,56 @@ final class AppShell: NSObject {
                 }
             }
         }
+        // Peek: intercept cross-site link clicks in an anchored (pinned/favourite) tab.
+        tab.injector.onNavigationAction = { [weak self, weak tab] action in
+            guard let self, let tab else { return .allow }
+            return self.decideNavigation(for: tab, action)
+        }
+        // target="_blank" / window.open: Peek from a pinned tab (cross-site), else a new tab.
+        tab.injector.onCreateWebView = { [weak self, weak tab] action in
+            guard let self, let tab, let url = action.request.url, url.scheme?.hasPrefix("http") == true else { return }
+            let peek = tab.kind != .regular && {
+                if let home = tab.homeURL ?? tab.webView.url, let hh = home.host, let nh = url.host { return hh != nh }
+                return false
+            }()
+            DispatchQueue.main.async { [weak self] in
+                if peek { self?.showPeek(url) } else { self?.openInNewTab(url) }
+            }
+        }
         return tab
+    }
+
+    /// A cross-site link click in a pinned/favourite tab opens a Peek instead of navigating
+    /// the anchored tab away from its home.
+    private func decideNavigation(for tab: BrowserTab, _ action: WKNavigationAction) -> WKNavigationActionPolicy {
+        guard tab.kind != .regular,
+              action.navigationType == .linkActivated,
+              action.targetFrame?.isMainFrame == true,
+              let url = action.request.url, url.scheme?.hasPrefix("http") == true,
+              let home = tab.homeURL ?? tab.webView.url,
+              let homeHost = home.host, let newHost = url.host, homeHost != newHost
+        else { return .allow }
+        // Defer the Peek to the next tick — creating a web view synchronously inside the
+        // navigation-policy callback re-enters WebKit and crashes.
+        DispatchQueue.main.async { [weak self] in self?.showPeek(url) }
+        return .cancel
+    }
+
+    // MARK: - Peek (link preview from pinned tabs)
+
+    private func showPeek(_ url: URL) {
+        let content = webContainer
+        hidePeek()
+        let p = PeekOverlay(broker: broker, id: nextPeekId); nextPeekId += 1
+        p.onClose = { [weak self] in self?.hidePeek() }
+        p.onPromote = { [weak self] u in self?.openInNewTab(u) }
+        peek = p
+        p.activate(in: content, url: url)
+    }
+    private func hidePeek() {
+        peek?.tearDown()
+        peek?.removeFromSuperview()
+        peek = nil
     }
 
     @objc func newTab() {
@@ -248,6 +300,8 @@ final class AppShell: NSObject {
         guard tabs.indices.contains(index) else { return }
         if tabs[index].splitGroupId != nil { removeFromSplit(index) } // leaving the regular section
         tabs[index].kind = kind
+        // Anchor the tab to its current site for Peek; clear when it goes back to regular.
+        tabs[index].homeURL = (kind == .regular) ? nil : (tabs[index].webView.url ?? tabs[index].currentURL)
         if kind != .pinned { tabs[index].folderId = nil } // only pinned tabs live in folders
         rebuildTabBar() // instant — the rest of the list doesn't flash
         // Fade the moved tab in at its new section (targeted, no whole-list blink).
@@ -1022,6 +1076,7 @@ final class AppShell: NSObject {
 
     /// Render the visible tab(s): a single rounded web view, or an NSSplitView of 2–4 panes.
     private func showVisibleTabs() {
+        hidePeek() // navigating the main content dismisses any open Peek
         webContainer.subviews.forEach { $0.removeFromSuperview() }
         if let gid = activeTab.splitGroupId { visibleTabIds = groupMemberIds(gid) }
         else { visibleTabIds = [activeTab.id] }

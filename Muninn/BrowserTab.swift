@@ -229,6 +229,9 @@ final class BrowserTab {
     var workspaceId: UUID?
     /// Tabs sharing a split-group id render as one combined sidebar tab + a split view.
     var splitGroupId: UUID?
+    /// For pinned/favourite tabs: the site it's anchored to. Cross-site link clicks open a
+    /// Peek preview instead of navigating the tab away from here.
+    var homeURL: URL?
     /// URL a restored favourite/pinned tab should load lazily on first activation.
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).
