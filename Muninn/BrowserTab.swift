@@ -234,6 +234,8 @@ final class BrowserTab {
     var homeURL: URL?
     /// Whether this tab is currently playing media (drives the Mini Player).
     var isPlayingMedia = false
+    /// Last time this tab was the foreground tab — drives Auto-Archive.
+    var lastActiveAt = Date()
     /// URL a restored favourite/pinned tab should load lazily on first activation.
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).

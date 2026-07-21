@@ -35,3 +35,36 @@ enum SearchEngine: String, CaseIterable {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
     }
 }
+
+/// Auto-Archive: how long a regular tab can sit unused before it's auto-closed (pinned/
+/// favourite tabs are exempt). Archived tabs stay reopenable via Cmd+Shift+T / history.
+enum AutoArchive: String, CaseIterable {
+    case never, h12, d1, d7, d30
+
+    var displayName: String {
+        switch self {
+        case .never: return "Never"
+        case .h12:   return "After 12 Hours"
+        case .d1:    return "After 1 Day"
+        case .d7:    return "After 7 Days"
+        case .d30:   return "After 30 Days"
+        }
+    }
+
+    /// Idle time before archiving, or nil to disable.
+    var interval: TimeInterval? {
+        switch self {
+        case .never: return nil
+        case .h12:   return 12 * 3600
+        case .d1:    return 24 * 3600
+        case .d7:    return 7 * 24 * 3600
+        case .d30:   return 30 * 24 * 3600
+        }
+    }
+
+    private static let key = "muninn.autoArchive"
+    static var current: AutoArchive {
+        get { AutoArchive(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .d1 }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
+    }
+}
