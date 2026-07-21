@@ -1,10 +1,34 @@
 import AppKit
 import WebKit
 
-/// A tab-bar chip view that remembers which tab index it represents (for the
-/// click-to-select gesture).
+/// A tab-bar chip. Selection is via `mouseDown` (which the close button, being a
+/// subview, naturally consumes — so clicking × never also selects the tab).
 final class TabChipView: NSView {
     var index: Int = 0
+    var onSelect: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onSelect?() }
+}
+
+/// Close button that highlights on hover.
+final class HoverCloseButton: NSButton {
+    private var tracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t); tracking = t
+    }
+    override func mouseEntered(with event: NSEvent) {
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.25).cgColor
+        contentTintColor = .labelColor
+    }
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = NSColor.clear.cgColor
+        contentTintColor = .secondaryLabelColor
+    }
 }
 
 /// One browser tab: an injected `WKWebView` (the Pass content shim rides along, per-tab

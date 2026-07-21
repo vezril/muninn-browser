@@ -212,6 +212,7 @@ final class AppShell: NSObject {
     private func makeTabChip(_ tab: BrowserTab, index: Int, active: Bool) -> NSView {
         let chip = TabChipView()
         chip.index = index
+        chip.onSelect = { [weak self] in self?.selectTab(index) }
         chip.wantsLayer = true
         chip.layer?.cornerRadius = 7
         chip.layer?.backgroundColor = active
@@ -227,31 +228,27 @@ final class AppShell: NSObject {
         title.lineBreakMode = .byTruncatingTail
         title.translatesAutoresizingMaskIntoConstraints = false
 
-        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")!,
-                             target: self, action: #selector(tabChipClosed(_:)))
+        let close = HoverCloseButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")!,
+                                     target: self, action: #selector(tabChipClosed(_:)))
         close.tag = index
         close.isBordered = false
         close.imageScaling = .scaleProportionallyDown
         close.contentTintColor = .secondaryLabelColor
         close.translatesAutoresizingMaskIntoConstraints = false
-        close.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        close.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        close.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        close.heightAnchor.constraint(equalToConstant: 20).isActive = true
 
         chip.addSubview(title); chip.addSubview(close)
         NSLayoutConstraint.activate([
             title.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 11),
             title.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
-            close.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -7),
+            close.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
             close.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
             title.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -6),
         ])
-        chip.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(tabChipTapped(_:))))
         return chip
     }
 
-    @objc private func tabChipTapped(_ g: NSClickGestureRecognizer) {
-        if let chip = g.view as? TabChipView { selectTab(chip.index) }
-    }
     @objc private func tabChipClosed(_ sender: NSButton) { closeTab(sender.tag) }
 
     // MARK: - auth-fork (parked; runs on the active tab)
