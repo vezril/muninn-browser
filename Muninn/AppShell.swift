@@ -75,6 +75,7 @@ final class AppShell: NSObject {
     private var peeking = false     // temporarily revealed by hovering the left edge
     private let toggleButton = NSButton()
     private var mouseMonitor: Any?
+    private var archiveTimer: Timer?
     private static let sidebarWidth: CGFloat = 230
     private static let topInset: CGFloat = 30 // clears the traffic-light strip (full-size content)
     private static let webCardInset: CGFloat = 8 // margin around the floating web card
@@ -161,6 +162,10 @@ final class AppShell: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         installKeyMonitor()
         installMouseMonitor()
+        // Auto-Archive sweep every few minutes (also runs on each tab switch).
+        archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.archiveStaleTabs() }
+        }
         let env = ProcessInfo.processInfo.environment
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
@@ -407,6 +412,7 @@ final class AppShell: NSObject {
 
     @objc func newTab() {
         let outgoing = activeTab
+        outgoing.lastActiveAt = Date()
         let tab = makeTab(); tab.workspaceId = activeWorkspaceId
         tabs.append(tab)
         activeIndex = tabs.count - 1
@@ -500,12 +506,29 @@ final class AppShell: NSObject {
         // Returning to the mini'd tab reclaims its web view from the Mini Player.
         if tabs[index].id == miniTabId { stopMiniPlayer() }
         let outgoing = activeTab
+        outgoing.lastActiveAt = Date() // it was in the foreground until now
         activeIndex = index
+        tabs[index].lastActiveAt = Date()
         lastActiveTabId[activeWorkspaceId] = tabs[index].id
         tabs[index].ensureLoaded() // lazily load a restored favourite/pinned tab
         popOutIfPlaying(outgoing) // switching away from a still-playing tab → Mini Player
         showVisibleTabs() // shows the tab's split group, or the tab alone
         rebuildTabBar()
+        archiveStaleTabs() // clean up idle tabs opportunistically
+    }
+
+    /// Auto-Archive: close regular, ungrouped tabs left idle past the configured interval
+    /// (the active tab, pinned/favourites, split members, and the Mini Player tab are exempt).
+    /// Archived tabs stay reopenable via Cmd+Shift+T and history.
+    private func archiveStaleTabs() {
+        guard let interval = AutoArchive.current.interval else { return }
+        let cutoff = Date().addingTimeInterval(-interval)
+        let activeId = tabs.indices.contains(activeIndex) ? tabs[activeIndex].id : -1
+        let staleIds = tabs.filter {
+            $0.kind == .regular && $0.splitGroupId == nil
+                && $0.id != activeId && $0.id != miniTabId && $0.lastActiveAt < cutoff
+        }.map { $0.id }
+        for id in staleIds where tabIndex(id: id) != nil { closeTab(tabIndex(id: id)!) }
     }
 
     /// Pop the outgoing tab into the Mini Player if it's still playing media.
@@ -714,6 +737,17 @@ final class AppShell: NSObject {
         engineItem.submenu = sub
         menu.addItem(engineItem)
 
+        let archiveItem = NSMenuItem(title: "Auto-Archive Tabs", action: nil, keyEquivalent: "")
+        let asub = NSMenu()
+        for a in AutoArchive.allCases {
+            let m = NSMenuItem(title: a.displayName, action: #selector(setAutoArchive(_:)), keyEquivalent: "")
+            m.target = self; m.representedObject = a.rawValue
+            if a == AutoArchive.current { m.state = .on }
+            asub.addItem(m)
+        }
+        archiveItem.submenu = asub
+        menu.addItem(archiveItem)
+
         menu.addItem(.separator())
         let def = NSMenuItem(title: "Set as Default Browser…", action: #selector(makeDefaultBrowser), keyEquivalent: "")
         def.target = self; menu.addItem(def)
@@ -726,6 +760,12 @@ final class AppShell: NSObject {
     @objc private func setSearchEngine(_ s: NSMenuItem) {
         guard let e = (s.representedObject as? String).flatMap(SearchEngine.init(rawValue:)) else { return }
         SearchEngine.current = e
+    }
+
+    @objc private func setAutoArchive(_ s: NSMenuItem) {
+        guard let a = (s.representedObject as? String).flatMap(AutoArchive.init(rawValue:)) else { return }
+        AutoArchive.current = a
+        archiveStaleTabs()
     }
 
     @objc private func makeDefaultBrowser() {
@@ -1616,7 +1656,9 @@ final class AppShell: NSObject {
             }
         }
 
-        if !favs.isEmpty || !pins.isEmpty || !wsFolders.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
+        if !favs.isEmpty || !pins.isEmpty || !wsFolders.isEmpty {
+            tabStack.addArrangedSubview(separatorLine(showClear: !regs.isEmpty))
+        }
         // Regular tabs — a split group renders once as a combined chip at its first member.
         var renderedGroups = Set<UUID>()
         for (i, tab) in regs {
@@ -1827,12 +1869,45 @@ final class AppShell: NSObject {
         return row
     }
 
-    private func separatorLine() -> NSView {
+    /// The line between pinned/favourites and regular tabs, with a small "Clear" button on the
+    /// right (↓ = the unpinned tabs below) that closes all unpinned tabs.
+    private func separatorLine(showClear: Bool) -> NSView {
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        row.heightAnchor.constraint(equalToConstant: 16).isActive = true
+
         let box = NSBox()
         box.boxType = .separator
         box.translatesAutoresizingMaskIntoConstraints = false
-        box.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
-        return box
+        row.addSubview(box)
+
+        NSLayoutConstraint.activate([
+            box.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            box.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+        ])
+
+        if showClear {
+            let clear = NSButton(title: "Clear",
+                                 image: NSImage(systemSymbolName: "arrow.down", accessibilityDescription: "Clear unpinned tabs")!
+                                    .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))!,
+                                 target: self, action: #selector(clearUnpinnedTabs))
+            clear.imagePosition = .imageLeading
+            clear.isBordered = false
+            clear.font = .systemFont(ofSize: 10, weight: .medium)
+            clear.contentTintColor = .secondaryLabelColor
+            clear.toolTip = "Clear unpinned tabs"
+            clear.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(clear)
+            NSLayoutConstraint.activate([
+                clear.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+                clear.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+                box.trailingAnchor.constraint(equalTo: clear.leadingAnchor, constant: -8),
+            ])
+        } else {
+            box.trailingAnchor.constraint(equalTo: row.trailingAnchor).isActive = true
+        }
+        return row
     }
 
     /// Favourites as larger avatar icons, wrapped into rows.
