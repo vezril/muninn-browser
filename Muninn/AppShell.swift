@@ -107,6 +107,20 @@ final class AppShell: NSObject {
     /// native fetch proxy). No crypto key in the URL — the state is a plain nonce and the
     /// key/keyPassword come from the account app's fork message.
     func forkInit() {
+        // MUNINN_FRESH: wipe Muninn's OWN default website data (cookies/session for the
+        // page tab — NOT the system browser) so /authorize does a fresh login → fork,
+        // instead of short-circuiting on a cached Proton session.
+        if ProcessInfo.processInfo.environment["MUNINN_FRESH"] != nil {
+            let types = WKWebsiteDataStore.allWebsiteDataTypes()
+            WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
+                self?.doForkInit()
+            }
+        } else {
+            doForkInit()
+        }
+    }
+
+    private func doForkInit() {
         let bytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
         let nonce = Data(bytes).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
