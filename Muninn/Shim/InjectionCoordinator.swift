@@ -19,6 +19,9 @@ final class InjectionCoordinator: NSObject {
     private(set) var webView: WKWebView!
     private let isolatedWorld: WKContentWorld
     private var bridge: IsolatedBridge!
+    /// Broker context name (multi-tab: each tab is a distinct push context so native→page
+    /// delivery targets the right tab). Default "page" for single-tab / tests.
+    let contextName: String
 
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
@@ -36,8 +39,10 @@ final class InjectionCoordinator: NSObject {
     ///   instrumentation user scripts and to keep an offscreen page process awake
     ///   (`inactiveSchedulingPolicy = .none`). Production passes nil.
     init(broker: MessageBroker, injectContentScripts: Bool = true,
+         contextName: String = "page",
          configHook: ((WKWebViewConfiguration) -> Void)? = nil) {
         self.broker = broker
+        self.contextName = contextName
         self.isolatedWorld = WKContentWorld.world(name: Self.isolatedWorldName)
         super.init()
 
@@ -104,14 +109,14 @@ final class InjectionCoordinator: NSObject {
         }
         // Register as the "page" push context so the broker can deliver events
         // (and future onMessage) into this isolated world.
-        broker.registerContext("page", webView: webView, world: isolatedWorld)
+        broker.registerContext(contextName, webView: webView, world: isolatedWorld)
     }
 
     func load(_ url: URL) { webView.load(URLRequest(url: url)) }
 
     /// Lifecycle symmetry with BackgroundHost (this owns a live networking WKWebView).
     func stop() {
-        broker.unregisterContext("page")
+        broker.unregisterContext(contextName)
         webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView?.configuration.userContentController.removeAllScriptMessageHandlers()
@@ -249,7 +254,7 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
             let portId = args.first as? String ?? ""
             switch m {
             case "connect": injector.broker.portConnect(portId: portId, name: (args.count > 1 ? args[1] as? String : nil) ?? "",
-                                                         from: "page", senderURL: injector.webView?.url?.absoluteString)
+                                                         from: injector.contextName, senderURL: injector.webView?.url?.absoluteString)
             case "message": injector.broker.portMessageFromClient(portId: portId, message: args.count > 1 ? args[1] : nil)
             case "disconnect": injector.broker.portDisconnect(portId: portId, origin: "client")
             default: break
