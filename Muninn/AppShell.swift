@@ -21,6 +21,8 @@ final class AppShell: NSObject {
     /// Recently closed regular tabs (for Cmd+Shift+T), most-recent last.
     private var closedTabs: [SavedTab] = []
     private var palette: CommandPalette?
+    private var quickLooks: [QuickLookWindow] = []
+    private var nextQuickLookId = 0
     private var currentToast: NSView?
     private var toastDismiss: DispatchWorkItem?
     private var toastShareItems: [Any] = []
@@ -916,6 +918,26 @@ final class AppShell: NSObject {
         showActiveWebView(); tab.load(url); rebuildTabBar()
     }
 
+    // MARK: - Quick Look (Little Muninn)
+
+    /// Open a compact, ephemeral Quick Look window (Cmd+Option+N, or an external link when
+    /// Muninn is the default browser). `url` nil → open focused on the address field.
+    func openQuickLook(_ url: URL?) {
+        let ql = QuickLookWindow(broker: broker, id: nextQuickLookId); nextQuickLookId += 1
+        ql.onPromote = { [weak self] u in self?.promoteToTab(u) }
+        ql.onClosed = { [weak self] q in self?.quickLooks.removeAll { $0 === q } }
+        quickLooks.append(ql)
+        ql.present()
+        if let url { ql.load(url) } else { ql.focusAddress() }
+    }
+
+    /// "Open in Muninn" from a Quick Look — promote the page to a tab and surface the window.
+    private func promoteToTab(_ url: URL) {
+        openInNewTab(url)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     // MARK: - command palette (Cmd+N)
 
     @objc private func openCommandPalette() {
@@ -1487,6 +1509,9 @@ final class AppShell: NSObject {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self else { return e }
+            // Only handle main-window shortcuts when the main window is focused — a Quick
+            // Look window has its own key handling.
+            guard self.window.isKeyWindow else { return e }
             let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             // Control+Number → switch to workspace N (Arc-style).
             if flags == .control, let ch = e.charactersIgnoringModifiers, let n = Int(ch), n >= 1 {
