@@ -16,4 +16,4 @@
 
 - [x] 3.1 Full suite green (multi-tab refactor + contextName didn't regress the shim/bus).
 - [x] 3.2 Live check (Calvin: tabs, close × + hover, landing page, shortcuts — approved after iteration): launch, open/close/switch tabs, navigate in each, shortcuts work (GUI — warn Calvin per ground rule 2).
-- [ ] 3.3 Ship PR-gated; update `CLAUDE.md` (shell is now multi-tab).
+- [x] 3.3 Shell is now multi-tab, Arc-style vertical sidebar (collapsible nav + URL + tabs), Muninn landing page. Calvin-approved. (Ship folded into the branch.)
