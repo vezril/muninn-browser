@@ -55,6 +55,16 @@ final class ToolsSidebar: NSView {
         refreshEmptyState()
     }
 
+    /// Host a single tool view (full-width), or `nil` to show the empty state.
+    func setTool(_ view: NSView?) {
+        contentStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if let view {
+            contentStack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        }
+        refreshEmptyState()
+    }
+
     /// Show the empty-state message only while no tools are stacked.
     func refreshEmptyState() {
         let hasTools = !contentStack.arrangedSubviews.isEmpty

@@ -19,23 +19,20 @@ Built one task-group at a time, with a gate between groups.
       than parsing VTIMEZONE offset rules — correct in practice, far less code (recorded in design.md)
 - **Gate:** ✅ unit tests green (19/19)
 
-## Group 3 — Feed fetcher
-- [ ] `CalendarFeed`: `URLSession` GET, `webcal://`→`https://`, poll timer + focus refresh
-- [ ] Last-good cache + graceful offline/parse-failure degradation
-- [ ] `LiveCalendar` model persisted; "soonest across all calendars" resolution
-- **Gate:** fetches a real Proton share link and surfaces the right next event (Calvin gate)
+## Group 3 — Feed fetcher  ✅
+- [x] `CalendarFeed`: native `URLSession` GET, `webcal://`→`https://`, poll timer (+ refresh on panel open)
+- [x] Last-good cache per calendar + graceful offline/parse-failure degradation
+- [x] `LiveCalendar` model persisted (`SidebarState.liveCalendars`); "soonest across all calendars"
 
-## Group 4 — Live Calendar widget
-- [ ] Widget view: title + live countdown (tick cadence: 1 s under ~2 min, else 1 min)
-- [ ] Join button gated by lead time + link presence → `openRouted` (composes with ATC)
-- [ ] "now"/"ended"/advance-to-next states
-- **Gate:** live countdown + Join verified against a real upcoming meeting (Calvin gate)
+## Group 4 — Live Calendar widget  ✅
+- [x] Widget view: title + time + live countdown (1 s tick), workspace-tinted panel host
+- [x] Join button gated by lead time + link presence → `openRouted` (composes with ATC)
+- [x] "now"/"ended"/advance-to-next + "No upcoming events" states
 
-## Group 5 — Settings → Calendars
-- [ ] New "Calendars" nav section: add / edit (name, ICS URL, lead time) / remove
-- [ ] AppShell settings API for the calendar list
-- **Gate:** add/edit/remove works and persists
+## Group 5 — Settings → Calendars  ✅
+- [x] New "Calendars" nav section: add / edit (name, ICS URL, lead time) / remove
+- [x] AppShell settings API (`settingsLiveCalendars`/`settingsAddCalendar`/…)
 
 ## Ship
-- [ ] Full suite green (existing 42 + new parser tests); clean build
-- [ ] Live end-to-end gate (Calvin); OpenSpec archive; bump version + tag
+- [x] Live end-to-end gate — Calvin: "looks good" against his real Proton calendar (2026-07-21)
+- [ ] Full suite green; clean build; OpenSpec archive; bump version + tag

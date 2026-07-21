@@ -83,6 +83,12 @@ final class AppShell: NSObject {
     private var webTrailingCollapsed: NSLayoutConstraint!
     private var webTrailingWithTools: NSLayoutConstraint!
     private static let toolsWidth: CGFloat = 280
+    // Live Calendar (first Tools-sidebar tool).
+    private var liveCalendars: [LiveCalendar] = []
+    private let calendarFeed = CalendarFeed()
+    private let liveWidget = LiveCalendarWidget()
+    private var currentOccurrence: Occurrence?
+    private var calendarTick: Timer?
     private var mouseMonitor: Any?
     private var archiveTimer: Timer?
     private static let sidebarWidth: CGFloat = 230
@@ -125,6 +131,7 @@ final class AppShell: NSObject {
         defaultProfileId = profiles[0].id
         let profileIds = Set(profiles.map { $0.id })
         routingRules = saved.routingRules
+        liveCalendars = saved.liveCalendars
 
         // Folders — assign any pre-workspaces folder to the default workspace.
         folders = saved.folders.map { var f = $0; if f.workspaceId == nil { f.workspaceId = defaultWs }; return f }
@@ -177,6 +184,7 @@ final class AppShell: NSObject {
         archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.archiveStaleTabs() }
         }
+        startLiveCalendar()
         let env = ProcessInfo.processInfo.environment
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
@@ -566,7 +574,8 @@ final class AppShell: NSObject {
                                 activeWorkspace: activeWorkspaceId.uuidString,
                                 profiles: profiles,
                                 routingRules: routingRules,
-                                toolsSidebarOpen: toolsOpen))
+                                toolsSidebarOpen: toolsOpen,
+                                liveCalendars: liveCalendars))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
@@ -2353,6 +2362,61 @@ final class AppShell: NSObject {
         // Peek: leaving the floating sidebar slides it back (only while collapsed).
         sidebar.onExited = { [weak self] in self?.closePeek() }
         rebuildTabBar()
+
+        // Live Calendar tool (Tools sidebar).
+        liveWidget.onJoin = { [weak self] url in
+            self?.openRouted(url, newTab: true)
+            self?.window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        }
+        toolsSidebar.setTool(liveCalendars.isEmpty ? nil : liveWidget)
+    }
+
+    // MARK: - Live Calendar
+
+    /// Start the feed + the 1 s countdown tick (called once, after the window is up).
+    private func startLiveCalendar() {
+        calendarFeed.onUpdate = { [weak self] in self?.resolveCalendar() }
+        calendarFeed.setCalendars(liveCalendars)
+        calendarFeed.start(interval: 300)
+        calendarTick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickCalendar() }
+        }
+        resolveCalendar()
+    }
+
+    /// Recompute the next occurrence (cheap-ish; runs on feed refresh + when one ends).
+    private func resolveCalendar() {
+        currentOccurrence = calendarFeed.nextOccurrence(now: Date())
+        refreshLiveWidget()
+    }
+
+    /// Per-second update: advance to the next event once the current one ends, else re-render
+    /// the countdown from the cached occurrence.
+    private func tickCalendar() {
+        guard toolsOpen, !liveCalendars.isEmpty else { return }
+        if let occ = currentOccurrence, Date() >= occ.end { resolveCalendar() } else { refreshLiveWidget() }
+    }
+
+    private func refreshLiveWidget() {
+        let lead = liveCalendars.first { $0.id == currentOccurrence?.event.calendarId }?.leadTimeMinutes ?? 5
+        liveWidget.update(occurrence: currentOccurrence, leadTimeMinutes: lead, now: Date())
+    }
+
+    /// Called by Settings when the calendar list changes.
+    private func liveCalendarsChanged() {
+        toolsSidebar.setTool(liveCalendars.isEmpty ? nil : liveWidget)
+        calendarFeed.setCalendars(liveCalendars)
+        resolveCalendar()
+        persist()
+    }
+
+    // Settings API (Settings → Calendars).
+    func settingsLiveCalendars() -> [LiveCalendar] { liveCalendars }
+    func settingsAddCalendar() { liveCalendars.append(LiveCalendar(name: "Calendar")); liveCalendarsChanged() }
+    func settingsRemoveCalendar(_ id: UUID) { liveCalendars.removeAll { $0.id == id }; liveCalendarsChanged() }
+    func settingsUpdateCalendar(_ id: UUID, _ mutate: (inout LiveCalendar) -> Void) {
+        guard let i = liveCalendars.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&liveCalendars[i]); liveCalendarsChanged()
     }
 
     private func installMouseMonitor() {
@@ -2444,6 +2508,7 @@ final class AppShell: NSObject {
                 apply()
             }
         } else { apply() }
+        if open { resolveCalendar() } // refresh the widget immediately on reveal
         persist()
     }
 

@@ -38,6 +38,8 @@ struct RRule: Equatable {
 
 /// A parsed VEVENT (recurrence unexpanded).
 struct VEvent {
+    /// Which configured Live Calendar this came from (stamped by `CalendarFeed`).
+    var calendarId: UUID?
     var uid: String = ""
     var summary: String = ""
     var location: String?
