@@ -6,7 +6,7 @@ import WebKit
 enum TabKind: String, Codable { case favourite, pinned, regular }
 
 /// Persisted representation of a favourite/pinned tab (restored on next launch).
-struct SavedTab: Codable { var url: String; var title: String; var kind: TabKind }
+struct SavedTab: Codable { var url: String; var title: String; var kind: TabKind; var faviconBase64: String? }
 
 /// A tab-bar chip. Selection is via `mouseDown` (which the close button, being a
 /// subview, naturally consumes — so clicking × never also selects the tab).
@@ -55,11 +55,16 @@ final class BrowserTab {
 
     /// Display title (page title, falling back to host / "New Tab").
     private(set) var title: String = "New Tab"
+    /// The site's own favicon (fetched from its origin — no third-party service).
+    private(set) var favicon: NSImage?
+    private var faviconData: Data?
+    private var faviconForURL: String?
     /// Fired when the tab's title or url changes (so the shell can refresh the UI).
     var onChange: (() -> Void)?
 
     private var titleObs: NSKeyValueObservation?
     private var urlObs: NSKeyValueObservation?
+    private var loadingObs: NSKeyValueObservation?
 
     init(id: Int, broker: MessageBroker) {
         self.id = id
@@ -69,6 +74,36 @@ final class BrowserTab {
         }
         urlObs = webView.observe(\.url, options: [.new]) { [weak self] wv, _ in
             MainActor.assumeIsolated { self?.refreshTitle(wv); self?.onChange?() }
+        }
+        // Fetch the favicon only once a page has finished loading — its DOM (and
+        // location.origin) is then the real page, not the outgoing one.
+        loadingObs = webView.observe(\.isLoading, options: [.new]) { [weak self] wv, change in
+            guard change.newValue == false else { return }
+            MainActor.assumeIsolated { self?.fetchFaviconIfNeeded() }
+        }
+    }
+
+    /// Restore a cached favicon (from persistence) so a favourite shows its icon before load.
+    func setInitialFavicon(base64: String?) {
+        guard let base64, let data = Data(base64Encoded: base64), let img = NSImage(data: data) else { return }
+        favicon = img; faviconData = data
+    }
+
+    /// Fetch the page's OWN favicon (its `<link rel=icon>` or `/favicon.ico`, from the
+    /// site's origin — never a third-party favicon service). Once per page.
+    private func fetchFaviconIfNeeded() {
+        guard isLoaded, let page = webView.url, page.scheme?.hasPrefix("http") == true else { return }
+        // Key by origin: one favicon per site, re-fetched when the origin changes.
+        let key = (page.scheme ?? "") + "://" + (page.host ?? "")
+        if faviconForURL == key { return }
+        faviconForURL = key
+        let js = "(function(){var l=document.querySelector('link[rel~=\"icon\"],link[rel=\"shortcut icon\"],link[rel=\"apple-touch-icon\"]');return l&&l.href?l.href:(location.origin+'/favicon.ico');})()"
+        webView.evaluateJavaScript(js) { [weak self] res, _ in
+            guard let self, let href = res as? String, let u = URL(string: href) else { return }
+            URLSession.shared.dataTask(with: u) { data, _, _ in
+                guard let data, !data.isEmpty, let img = NSImage(data: data), img.isValid else { return }
+                Task { @MainActor in self.favicon = img; self.faviconData = data; self.onChange?() }
+            }.resume()
         }
     }
 
@@ -106,11 +141,11 @@ final class BrowserTab {
 
     func saved() -> SavedTab? {
         guard let u = currentURL?.absoluteString, !u.isEmpty, !u.hasPrefix("about:") else { return nil }
-        return SavedTab(url: u, title: title, kind: kind)
+        return SavedTab(url: u, title: title, kind: kind, faviconBase64: faviconData?.base64EncodedString())
     }
 
     func stop() {
-        titleObs = nil; urlObs = nil
+        titleObs = nil; urlObs = nil; loadingObs = nil
         injector.stop()
     }
 }

@@ -59,6 +59,7 @@ final class AppShell: NSObject {
             tab.kind = s.kind
             tab.pendingURL = url
             tab.setInitialTitle(s.title)
+            tab.setInitialFavicon(base64: s.faviconBase64)
             tabs.append(tab)
         }
 
@@ -333,15 +334,33 @@ final class AppShell: NSObject {
             icon.layer?.borderWidth = 2
             icon.layer?.borderColor = NSColor.controlAccentColor.cgColor
         }
-        let letter = NSTextField(labelWithString: tab.avatarLetter)
-        letter.font = .systemFont(ofSize: 16, weight: .semibold)
-        letter.textColor = .white
-        letter.translatesAutoresizingMaskIntoConstraints = false
-        icon.addSubview(letter)
-        NSLayoutConstraint.activate([
-            letter.centerXAnchor.constraint(equalTo: icon.centerXAnchor),
-            letter.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-        ])
+        if let fav = tab.favicon {
+            // Show the site's own favicon, filling the tile (clipped to the rounded corners).
+            // Neutral tile behind it so transparent icons don't pick up the avatar colour.
+            icon.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+            icon.layer?.masksToBounds = true
+            let iv = NSImageView(image: fav)
+            iv.imageScaling = .scaleProportionallyUpOrDown
+            iv.translatesAutoresizingMaskIntoConstraints = false
+            icon.addSubview(iv)
+            NSLayoutConstraint.activate([
+                iv.leadingAnchor.constraint(equalTo: icon.leadingAnchor),
+                iv.trailingAnchor.constraint(equalTo: icon.trailingAnchor),
+                iv.topAnchor.constraint(equalTo: icon.topAnchor),
+                iv.bottomAnchor.constraint(equalTo: icon.bottomAnchor),
+            ])
+        } else {
+            // Fallback: coloured letter avatar (until the favicon loads).
+            let letter = NSTextField(labelWithString: tab.avatarLetter)
+            letter.font = .systemFont(ofSize: 16, weight: .semibold)
+            letter.textColor = .white
+            letter.translatesAutoresizingMaskIntoConstraints = false
+            icon.addSubview(letter)
+            NSLayoutConstraint.activate([
+                letter.centerXAnchor.constraint(equalTo: icon.centerXAnchor),
+                letter.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+            ])
+        }
         icon.toolTip = tab.title
         return icon
     }
@@ -361,6 +380,21 @@ final class AppShell: NSObject {
         chip.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
         chip.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
+        // Favicon (or a globe placeholder) in front of the title.
+        let fav = NSImageView()
+        fav.imageScaling = .scaleProportionallyDown
+        fav.wantsLayer = true
+        fav.layer?.cornerRadius = 3
+        fav.layer?.masksToBounds = true
+        fav.translatesAutoresizingMaskIntoConstraints = false
+        if let icon = tab.favicon {
+            fav.image = icon
+        } else {
+            fav.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
+            fav.contentTintColor = .tertiaryLabelColor
+        }
+
         let title = NSTextField(labelWithString: tab.title)
         title.font = .systemFont(ofSize: 12, weight: active ? .semibold : .regular)
         title.textColor = active ? .labelColor : .secondaryLabelColor
@@ -378,9 +412,13 @@ final class AppShell: NSObject {
         close.widthAnchor.constraint(equalToConstant: 16).isActive = true
         close.heightAnchor.constraint(equalToConstant: 16).isActive = true
 
-        chip.addSubview(title); chip.addSubview(close)
+        chip.addSubview(fav); chip.addSubview(title); chip.addSubview(close)
         NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 11),
+            fav.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 9),
+            fav.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            fav.widthAnchor.constraint(equalToConstant: 16),
+            fav.heightAnchor.constraint(equalToConstant: 16),
+            title.leadingAnchor.constraint(equalTo: fav.trailingAnchor, constant: 7),
             title.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
             close.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
             close.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
