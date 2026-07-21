@@ -33,6 +33,8 @@ final class InjectionCoordinator: NSObject {
     var onMediaState: ((Bool) -> Void)?
     /// Destination folder for downloads (the tab's profile download folder).
     var downloadFolder: (() -> URL)?
+    /// Developer Mode: right-click "View Page Source" on this web view.
+    var onViewSource: ((WKWebView) -> Void)?
 
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
@@ -62,6 +64,9 @@ final class InjectionCoordinator: NSObject {
         // Profiles: an isolated cookie/login/storage jar per profile (nil = the default store).
         if let dataStore { config.websiteDataStore = dataStore }
         config.setURLSchemeHandler(ExtensionSchemeHandler(), forURLScheme: PassBundle.scheme)
+        // Developer Mode: enable WKPreferences developer extras so the in-app Web Inspector can
+        // display (private KVC key; sets the backing ivar, so it can't raise for an unknown key).
+        if AppSettings.developerMode { config.preferences.setValue(true, forKey: "developerExtrasEnabled") }
 
         // E5 general injection (FR-9), per the vendored manifest:
         //  isolated world, document_start: bootstrap (id+manifest) → content-polyfill
@@ -118,14 +123,15 @@ final class InjectionCoordinator: NSObject {
         config.userContentController.add(MediaHandler(injector: self), contentWorld: isolatedWorld, name: "muninnMedia")
 
         configHook?(config)
-        self.webView = WKWebView(frame: .zero, configuration: config)
+        let mwv = MuninnWebView(frame: .zero, configuration: config)
+        mwv.onViewSource = { [weak self] wv in self?.onViewSource?(wv) }
+        self.webView = mwv
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
-        // Gate-mode only: allow Safari Web Inspector on the page (diagnostics). Never
-        // in a shipping run — inspection is a debug affordance, and the gate is a
-        // human-supervised session (ground rules 1+2).
-        if ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil, #available(macOS 13.3, *) {
-            self.webView.isInspectable = true
+        // Inspectable in Developer Mode (user opt-in) or the human-supervised E6 gate.
+        if #available(macOS 13.3, *) {
+            self.webView.isInspectable = AppSettings.developerMode
+                || ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil
         }
         // Register as the "page" push context so the broker can deliver events
         // (and future onMessage) into this isolated world.
