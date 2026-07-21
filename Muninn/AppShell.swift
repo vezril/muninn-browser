@@ -1641,6 +1641,7 @@ final class AppShell: NSObject {
         let p = CommandPalette()
         p.openTabs = tabs.filter { $0.workspaceId == activeWorkspaceId }.map { ($0.id, $0.title, $0.currentURL) }
         p.history = suggestionsEnabled ? currentHistory.entries : []
+        p.commands = paletteCommands()
         p.searchEngineName = currentSearchEngine.displayName
         p.onClose = { [weak self] in self?.closeCommandPalette() }
         p.onExecute = { [weak self] item in
@@ -1649,6 +1650,7 @@ final class AppShell: NSObject {
             case .tab(let id): if let i = self.tabIndex(id: id) { self.selectTab(i) }
             case .url(let url): self.openRouted(url, newTab: true)
             case .search(let q): self.openInNewTab(currentSearchEngine.url(q))
+            case .command(let id): self.closeCommandPalette(); self.runPaletteCommand(id); return
             }
             self.closeCommandPalette()
         }
@@ -1660,6 +1662,58 @@ final class AppShell: NSObject {
         palette?.removeFromSuperview()
         palette = nil
         window.makeFirstResponder(activeWebView)
+    }
+
+    /// The app-action commands offered in the palette. "Switch Space" expands to one entry per
+    /// workspace (so typing a space name autocompletes to it). Developer-mode entries appear only
+    /// when Developer Mode is on. Shortcut hints come from the (remappable) `ShortcutStore`.
+    private func paletteCommands() -> [CommandPalette.Command] {
+        func sc(_ a: ShortcutAction) -> String { ShortcutStore.shortcut(for: a).display }
+        var cmds: [CommandPalette.Command] = [
+            .init(id: "pin", title: "Pin Current Tab", symbol: "pin", shortcut: nil),
+            .init(id: "unpin", title: "Unpin Current Tab", symbol: "pin.slash", shortcut: nil),
+            .init(id: "favourite", title: "Favourite Current Tab", symbol: "star", shortcut: nil),
+            .init(id: "unfavourite", title: "Unfavourite Current Tab", symbol: "star.slash", shortcut: nil),
+            .init(id: "cleanUp", title: "Clean Up", symbol: "sparkles", shortcut: sc(.clearUnpinned)),
+            .init(id: "toggleSidebar", title: "Toggle Sidebar", symbol: "sidebar.left", shortcut: nil),
+            .init(id: "toolsSidebar", title: "Toggle Tools Sidebar", symbol: "sidebar.right", shortcut: sc(.toolsSidebar)),
+            .init(id: "openLast", title: "Open Last Tab", symbol: "arrow.uturn.left", shortcut: sc(.reopenClosed)),
+            .init(id: "reload", title: "Reload", symbol: "arrow.clockwise", shortcut: sc(.reload)),
+            .init(id: "copyURL", title: "Copy URL", symbol: "link", shortcut: sc(.copyURL)),
+            .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
+        ]
+        // Switch Space — one entry per workspace (all but the active one).
+        for ws in workspaces where ws.id != activeWorkspaceId {
+            let label = [ws.icon, ws.name].compactMap { $0 }.joined(separator: " ")
+            cmds.append(.init(id: "space:\(ws.id.uuidString)", title: "Switch Space: \(label)", symbol: "square.stack", shortcut: nil))
+        }
+        if AppSettings.developerMode {
+            cmds.append(.init(id: "inspect", title: "Open Inspector", symbol: "ladybug", shortcut: "⌥⌘I"))
+            cmds.append(.init(id: "viewSource", title: "View Page Source", symbol: "chevron.left.forwardslash.chevron.right", shortcut: "⌥⌘U"))
+        }
+        return cmds
+    }
+
+    private func runPaletteCommand(_ id: String) {
+        if id.hasPrefix("space:"), let uuid = UUID(uuidString: String(id.dropFirst("space:".count))) {
+            switchWorkspace(to: uuid); return
+        }
+        switch id {
+        case "pin":           setKind(activeIndex, .pinned)
+        case "unpin":         setKind(activeIndex, .regular)
+        case "favourite":     setKind(activeIndex, .favourite)
+        case "unfavourite":   setKind(activeIndex, .regular)
+        case "cleanUp":       clearUnpinnedTabs()
+        case "toggleSidebar": toggleSidebar()
+        case "toolsSidebar":  toggleToolsSidebar()
+        case "openLast":      reopenLastClosed()
+        case "reload":        reload()
+        case "copyURL":       copyActiveURL()
+        case "settings":      openSettings()
+        case "inspect":       inspectActiveTab()
+        case "viewSource":    viewSource(of: activeWebView)
+        default:              break
+        }
     }
 
     /// Render whatever the active tab entails — its split group, or itself alone.
