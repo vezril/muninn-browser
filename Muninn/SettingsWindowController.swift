@@ -9,8 +9,10 @@ final class SettingsWindowController: NSWindowController {
     private let content = NSView()
     private var navButtons: [NSButton] = []
     private let sections: [(title: String, icon: String)] = [
-        ("General", "gearshape"), ("Profiles", "person.2"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
+        ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
+        ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
+    private let routingList = NSStackView()
 
     // Profiles state
     private var selectedProfileId: UUID?
@@ -92,7 +94,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -386,6 +388,137 @@ final class SettingsWindowController: NSWindowController {
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -4),
         ])
         return v
+    }
+
+    // MARK: Routing (Air Traffic Control)
+
+    private func routingView() -> NSView {
+        let v = NSView()
+        let title = heading("Link Routing")
+        let hint = NSTextField(labelWithString: "Open links from other apps in a chosen space (and its profile). Unmatched links open in a Quick Look.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 2
+        hint.preferredMaxLayoutWidth = 620
+
+        routingList.orientation = .vertical
+        routingList.alignment = .leading
+        routingList.spacing = 8
+        routingList.translatesAutoresizingMaskIntoConstraints = false
+
+        let add = NSButton(title: "Add Rule", image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)!, target: self, action: #selector(addRule))
+        add.imagePosition = .imageLeading; add.bezelStyle = .rounded; add.controlSize = .regular
+
+        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let doc = NSView(); doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(routingList); scroll.documentView = doc
+
+        for s in [title, hint, add, scroll] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            add.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
+            add.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            scroll.topAnchor.constraint(equalTo: add.bottomAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            scroll.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -24),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            routingList.topAnchor.constraint(equalTo: doc.topAnchor, constant: 2),
+            routingList.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            routingList.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            routingList.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -2),
+        ])
+        rebuildRoutingList()
+        return v
+    }
+
+    private func rebuildRoutingList() {
+        routingList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let host else { return }
+        let spaces = host.settingsWorkspacePicker()
+        let rules = host.settingsRoutingRules()
+        if rules.isEmpty {
+            let empty = NSTextField(labelWithString: "No rules yet — add one to route a site to a space.")
+            empty.font = .systemFont(ofSize: 12); empty.textColor = .tertiaryLabelColor
+            routingList.addArrangedSubview(empty)
+            return
+        }
+        for rule in rules {
+            routingList.addArrangedSubview(ruleRow(rule, spaces))
+        }
+    }
+
+    private func ruleRow(_ rule: RoutingRule, _ spaces: [(id: UUID, name: String)]) -> NSView {
+        let r = NSView()
+        r.translatesAutoresizingMaskIntoConstraints = false
+
+        let hostField = NSTextField(string: rule.host)
+        hostField.placeholderString = "example.com"
+        hostField.font = .systemFont(ofSize: 13)
+        hostField.identifier = NSUserInterfaceItemIdentifier(rule.id.uuidString)
+        hostField.target = self; hostField.action = #selector(ruleHostChanged(_:))
+        hostField.translatesAutoresizingMaskIntoConstraints = false
+
+        let arrow = NSTextField(labelWithString: "→")
+        arrow.font = .systemFont(ofSize: 13); arrow.textColor = .secondaryLabelColor
+        arrow.translatesAutoresizingMaskIntoConstraints = false
+
+        let popup = NSPopUpButton()
+        popup.addItems(withTitles: spaces.map { $0.name })
+        if let idx = spaces.firstIndex(where: { $0.id == rule.workspaceId }) { popup.selectItem(at: idx) }
+        popup.identifier = NSUserInterfaceItemIdentifier(rule.id.uuidString)
+        popup.target = self; popup.action = #selector(ruleSpaceChanged(_:))
+        popup.translatesAutoresizingMaskIntoConstraints = false
+
+        let remove = NSButton(image: NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))!,
+                              target: self, action: #selector(removeRule(_:)))
+        remove.bezelStyle = .rounded; remove.controlSize = .regular
+        remove.contentTintColor = .systemRed
+        remove.identifier = NSUserInterfaceItemIdentifier(rule.id.uuidString)
+        remove.translatesAutoresizingMaskIntoConstraints = false
+
+        r.addSubview(hostField); r.addSubview(arrow); r.addSubview(popup); r.addSubview(remove)
+        NSLayoutConstraint.activate([
+            r.heightAnchor.constraint(equalToConstant: 28),
+            hostField.leadingAnchor.constraint(equalTo: r.leadingAnchor),
+            hostField.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+            hostField.widthAnchor.constraint(equalToConstant: 220),
+            arrow.leadingAnchor.constraint(equalTo: hostField.trailingAnchor, constant: 10),
+            arrow.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+            popup.leadingAnchor.constraint(equalTo: arrow.trailingAnchor, constant: 10),
+            popup.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            remove.leadingAnchor.constraint(equalTo: popup.trailingAnchor, constant: 12),
+            remove.trailingAnchor.constraint(equalTo: r.trailingAnchor),
+            remove.widthAnchor.constraint(equalToConstant: 40),
+            remove.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+        ])
+        return r
+    }
+
+    private func ruleId(_ sender: NSView) -> UUID? {
+        guard let raw = sender.identifier?.rawValue else { return nil }
+        return UUID(uuidString: raw)
+    }
+    @objc private func addRule() { host?.settingsAddRule(); rebuildRoutingList() }
+    @objc private func removeRule(_ s: NSButton) {
+        guard let id = ruleId(s) else { return }
+        host?.settingsRemoveRule(id); rebuildRoutingList()
+    }
+    @objc private func ruleHostChanged(_ s: NSTextField) {
+        guard let id = ruleId(s) else { return }
+        host?.settingsUpdateRule(id, host: s.stringValue)
+    }
+    @objc private func ruleSpaceChanged(_ s: NSPopUpButton) {
+        guard let id = ruleId(s), let host else { return }
+        let spaces = host.settingsWorkspacePicker()
+        guard s.indexOfSelectedItem < spaces.count else { return }
+        host.settingsUpdateRule(id, workspaceId: spaces[s.indexOfSelectedItem].id)
     }
 
     // MARK: Advanced

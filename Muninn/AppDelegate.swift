@@ -27,15 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.shell = shell
         shell.present()
         // Flush any links that arrived during launch (opened via an external link).
-        for url in pendingURLs { shell.openQuickLook(url) }
+        for url in pendingURLs { shell.route(url) }
         pendingURLs.removeAll()
     }
 
-    /// External links (Muninn as default browser) open in a Quick Look window.
+    /// External links (Muninn as default browser) route via Air Traffic Control — to a rule's
+    /// workspace, else a Quick Look window.
     func application(_ application: NSApplication, open urls: [URL]) {
         let web = urls.filter { $0.scheme == "http" || $0.scheme == "https" }
         guard !web.isEmpty else { return }
-        if let shell { web.forEach { shell.openQuickLook($0) } }
+        if let shell { web.forEach { shell.route($0) } }
         else { pendingURLs.append(contentsOf: web) }
     }
 
