@@ -71,9 +71,13 @@
     }
   }
 
-  // runtime.onMessage delivery with Chrome's sendResponse contract: a listener
-  // returning `true` keeps the channel open for an async sendResponse; the
-  // response is correlated back to native via respId (E6 cross-context bus).
+  // runtime.onMessage delivery. Supports BOTH response contracts:
+  //   • callback style — a listener returning `true` keeps the channel open for a
+  //     later sendResponse(...); a synchronous sendResponse(...) also works;
+  //   • Promise style (modern MV3 / webextension-polyfill) — a listener returning a
+  //     thenable resolves to the response. Proton's `lU.onMessage` is async, so this
+  //     path is load-bearing for the account handshake (pass-installed, etc.).
+  // The response is correlated back to native via respId (E6 cross-context bus).
   function fireMessage(key, message, sender, respId) {
     var l = listeners[key] || [];
     var responded = false;
@@ -83,8 +87,15 @@
     }
     var wantsAsync = false;
     for (var i = 0; i < l.length; i++) {
-      try { if (l[i](message, sender, sendResponse) === true) wantsAsync = true; }
-      catch (e) { /* listener errors are the extension's */ }
+      try {
+        var ret = l[i](message, sender, sendResponse);
+        if (ret === true) {
+          wantsAsync = true; // classic: async sendResponse coming
+        } else if (ret && typeof ret.then === "function") {
+          wantsAsync = true; // modern: the resolved value IS the response
+          ret.then(function (r) { sendResponse(r); }, function () { sendResponse(null); });
+        }
+      } catch (e) { /* listener errors are the extension's */ }
     }
     // No async responder and nobody answered synchronously → close the channel.
     if (!wantsAsync && !responded && respId) sendResponse(null);
@@ -227,12 +238,90 @@
       } else {
         fireEvent(d.key, d.args || []);
       }
+    } else if (d.__shim === "connect") {
+      // A client (popup/page) opened a port to us → build the worker-side Port and
+      // fire runtime.onConnect (background.js stores it and broadcasts state over it).
+      var pid = d.portId, onMsg = [], onDisc = [], open = true;
+      var stub = {
+        name: d.name || "", sender: d.sender || {},
+        onMessage: { addListener: function (f) { onMsg.push(f); }, removeListener: function (f) { var i = onMsg.indexOf(f); if (i >= 0) onMsg.splice(i, 1); } },
+        onDisconnect: { addListener: function (f) { onDisc.push(f); }, removeListener: function (f) { var i = onDisc.indexOf(f); if (i >= 0) onDisc.splice(i, 1); } },
+        postMessage: function (m) { if (open) self.postMessage({ __shim: "portPost", portId: pid, message: m }); },
+        disconnect: function () { if (!open) return; open = false; delete ports[pid]; self.postMessage({ __shim: "portDisconnectHost", portId: pid }); },
+      };
+      ports[pid] = { onMessage: onMsg, onDisconnect: onDisc, stub: stub, close: function () { open = false; } };
+      fireEvent("runtime.onConnect", [stub]);
     } else if (d.__shim === "portMessage") {
       var pt = ports[d.portId]; if (pt) pt.onMessage.forEach(function (f) { try { f(d.message, pt.stub); } catch (_) {} });
     } else if (d.__shim === "portDisconnect") {
-      var pd = ports[d.portId]; if (pd) { pd.onDisconnect.forEach(function (f) { try { f(pd.stub); } catch (_) {} }); delete ports[d.portId]; }
+      var pd = ports[d.portId]; if (pd) { if (pd.close) pd.close(); pd.onDisconnect.forEach(function (f) { try { f(pd.stub); } catch (_) {} }); delete ports[d.portId]; }
     }
   });
+
+  // --- native fetch proxy (change native-fetch-proxy) ----------------------
+  // The worker's origin is muninn-ext://<id>, so cross-origin fetch to the Proton
+  // API is CORS-blocked. Route http(s) requests to allowlisted (*.proton.me) hosts
+  // through native URLSession (no CORS); everything else uses the platform fetch
+  // unchanged (own resources, blob:, data:). Installed at import time — BEFORE the
+  // boot script does importScripts("background.js") — so Proton sees the override.
+  (function () {
+    var nativeFetch = self.fetch ? self.fetch.bind(self) : null;
+    function allowed(u) {
+      try {
+        var url = new URL(u, (self.location && self.location.href) || undefined);
+        if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+        var h = url.hostname.toLowerCase();
+        return h === "proton.me" || h.endsWith(".proton.me");
+      } catch (_) { return false; }
+    }
+    function b64FromBuf(buf) {
+      var bytes = new Uint8Array(buf), bin = "";
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return self.btoa(bin);
+    }
+    function bufFromB64(b64) {
+      var bin = self.atob(b64 || ""), len = bin.length, bytes = new Uint8Array(len);
+      for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+    self.fetch = function (input, init) {
+      var url = (typeof input === "string") ? input : (input && input.url);
+      // Safe entry probe (host only) — lets the E6 gate see whether the worker calls
+      // fetch during the fork, and to which host, before the allowlist decision.
+      try {
+        var eh = new URL(url, (self.location && self.location.href) || undefined).hostname;
+        callNative("__fetch", "probe", [eh]).then(function () {}, function () {});
+      } catch (_) {}
+      if (!url || !allowed(url)) return nativeFetch ? nativeFetch(input, init) : Promise.reject(new TypeError("no fetch"));
+      var req = (typeof input === "object" && input) ? input : null;
+      var method = (init && init.method) || (req && req.method) || "GET";
+      var headers = {};
+      var hsrc = (init && init.headers) || (req && req.headers);
+      if (hsrc) {
+        if (typeof hsrc.forEach === "function") hsrc.forEach(function (v, k) { headers[k] = v; });
+        else if (Array.isArray(hsrc)) hsrc.forEach(function (p) { headers[p[0]] = p[1]; });
+        else Object.keys(hsrc).forEach(function (k) { headers[k] = hsrc[k]; });
+      }
+      function send(bodyBase64) {
+        var spec = { url: url, method: method, headers: headers };
+        if (bodyBase64) spec.bodyBase64 = bodyBase64;
+        return callNative("__fetch", "request", [spec]).then(function (r) {
+          if (!r || r.__error) throw new TypeError("Failed to fetch" + (r && r.__error ? " (" + r.__error + ")" : ""));
+          var h = new Headers();
+          (r.headers || []).forEach(function (p) { try { h.append(p[0], p[1]); } catch (_) {} });
+          return new Response(bufFromB64(r.bodyBase64), { status: r.status, statusText: r.statusText, headers: h });
+        });
+      }
+      var body = (init && init.body);
+      if (body == null) return send(null);
+      if (typeof body === "string") return send(self.btoa(unescape(encodeURIComponent(body))));
+      if (body instanceof ArrayBuffer) return send(b64FromBuf(body));
+      if (body && body.buffer instanceof ArrayBuffer) return send(b64FromBuf(body.buffer));
+      // FormData/Blob/ReadableStream bodies + AbortSignal cancel are deferred (MVP is
+      // the fork-consume GET). Fall back to native (honest CORS failure) for those.
+      return nativeFetch ? nativeFetch(input, init) : Promise.reject(new TypeError("unsupported body"));
+    };
+  })();
 
   // --- init (called by boot script once page sends init) -------------------
   self.__shimInit = function (initData) {

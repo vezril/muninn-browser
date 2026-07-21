@@ -46,6 +46,12 @@ final class BackgroundHost: NSObject {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
+        // Gate-mode only: Safari Web Inspector on the background host page (so its
+        // Worker's console — e.g. background.js "[Activation] missing permissions" —
+        // is visible during a supervised diagnostic gate). Never in a shipping run.
+        if ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil, #available(macOS 13.3, *) {
+            webView.isInspectable = true
+        }
         self.webView = webView
         broker.registerContext("host", webView: webView, world: nil)
 
@@ -150,6 +156,17 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         guard let host, let env = message.body as? [String: Any] else {
             return (nil, "bad envelope")
         }
+        // Native fetch proxy (host-only route — the page's IsolatedBridge has no such
+        // branch, so content worlds can't reach it). Async: awaits URLSession.
+        if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "request" {
+            return (await host.broker.performFetch(env), nil)
+        }
+        // Safe entry probe: the worker called fetch (host only, before routing).
+        if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "probe" {
+            let h = ((env["args"] as? [Any])?.first as? String) ?? "?"
+            host.broker.onFetchProbe?("ENTRY", h, 0, false)
+            return (NSNull(), nil)
+        }
         do { return (try host.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
     }
@@ -173,6 +190,11 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
             if let id = d["id"] as? String { host.broker.resolveResponse(id: id, result: d["result"]) }
         case "workerError", "workerRejection":
             host.note(kind: kind, info: d)
+        case "portPost":
+            // A worker-side port.postMessage → route to the client port (popup/page).
+            if let portId = d["portId"] as? String { host.broker.portMessageFromHost(portId: portId, message: d["message"]) }
+        case "portDisconnectHost":
+            if let portId = d["portId"] as? String { host.broker.portDisconnect(portId: portId, origin: "host") }
         case "audit":
             if let ns = d["ns"] as? String, let member = d["member"] as? String {
                 host.broker.record(ns: ns, member: member,

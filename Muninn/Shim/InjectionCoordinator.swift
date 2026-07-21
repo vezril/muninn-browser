@@ -19,6 +19,9 @@ final class InjectionCoordinator: NSObject {
     private(set) var webView: WKWebView!
     private let isolatedWorld: WKContentWorld
     private var bridge: IsolatedBridge!
+    /// Broker context name (multi-tab: each tab is a distinct push context so native→page
+    /// delivery targets the right tab). Default "page" for single-tab / tests.
+    let contextName: String
 
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
@@ -36,8 +39,10 @@ final class InjectionCoordinator: NSObject {
     ///   instrumentation user scripts and to keep an offscreen page process awake
     ///   (`inactiveSchedulingPolicy = .none`). Production passes nil.
     init(broker: MessageBroker, injectContentScripts: Bool = true,
+         contextName: String = "page",
          configHook: ((WKWebViewConfiguration) -> Void)? = nil) {
         self.broker = broker
+        self.contextName = contextName
         self.isolatedWorld = WKContentWorld.world(name: Self.isolatedWorldName)
         super.init()
 
@@ -60,6 +65,18 @@ final class InjectionCoordinator: NSObject {
         }
         if let poly = Self.resource("content-polyfill", "js") {
             addUserScript(poly, at: .atDocumentStart, world: isolatedWorld, allFrames: true)
+        }
+        // externally_connectable bridge — MAIN world, document_start, all frames.
+        // Self-gates on the manifest's externally_connectable hosts, so every other
+        // origin's MAIN world stays clean (S2). Injected unconditionally (it's the
+        // auth-fork detection path, independent of orchestrator).
+        if let ecTemplate = Self.resource("externally-connectable", "js"),
+           let hostsData = try? JSONSerialization.data(withJSONObject: PassBundle.externallyConnectableHosts),
+           let hostsJSON = String(data: hostsData, encoding: .utf8) {
+            let ec = ecTemplate
+                .replacingOccurrences(of: "__EC_HOSTS_JSON__", with: hostsJSON)
+                .replacingOccurrences(of: "__CANONICAL_ID__", with: PassBundle.canonicalID)
+            addUserScript(ec, at: .atDocumentStart, world: .page, allFrames: true)
         }
         if injectContentScripts {
             // orchestrator.js — the general content script (all http(s) pages).
@@ -84,16 +101,22 @@ final class InjectionCoordinator: NSObject {
         configHook?(config)
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
+        // Gate-mode only: allow Safari Web Inspector on the page (diagnostics). Never
+        // in a shipping run — inspection is a debug affordance, and the gate is a
+        // human-supervised session (ground rules 1+2).
+        if ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil, #available(macOS 13.3, *) {
+            self.webView.isInspectable = true
+        }
         // Register as the "page" push context so the broker can deliver events
         // (and future onMessage) into this isolated world.
-        broker.registerContext("page", webView: webView, world: isolatedWorld)
+        broker.registerContext(contextName, webView: webView, world: isolatedWorld)
     }
 
     func load(_ url: URL) { webView.load(URLRequest(url: url)) }
 
     /// Lifecycle symmetry with BackgroundHost (this owns a live networking WKWebView).
     func stop() {
-        broker.unregisterContext("page")
+        broker.unregisterContext(contextName)
         webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView?.configuration.userContentController.removeAllScriptMessageHandlers()
@@ -210,6 +233,33 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
         if ns == "runtime", (env["method"] as? String) == "sendMessage" {
             let result = await injector.broker.routeSendMessageToHost(args.first, senderURL: injector.webView?.url?.absoluteString)
             return (result, nil)
+        }
+        // MAIN-world externally_connectable bridge (E6): a page's
+        // chrome.runtime.sendMessage(extId, msg), relayed here from MAIN via the
+        // isolated world. NATIVE ORIGIN GATE (defense-in-depth beyond the JS
+        // location.host checks): only frames whose real securityOrigin host is a
+        // manifest externally_connectable host reach onMessageExternal.
+        if ns == "runtime", (env["method"] as? String) == "__externalMessage" {
+            let host = message.frameInfo.securityOrigin.host.lowercased()
+            guard PassBundle.externallyConnectableHosts.contains(host) else {
+                return (nil, "origin not externally_connectable")
+            }
+            let result = await injector.broker.routeExternalMessageToHost(
+                args.first, senderURL: message.frameInfo.request.url?.absoluteString)
+            return (result, nil)
+        }
+        // Cross-context ports (page content script ⇄ background), same channel as the popup.
+        if ns == "__port" {
+            let m = env["method"] as? String
+            let portId = args.first as? String ?? ""
+            switch m {
+            case "connect": injector.broker.portConnect(portId: portId, name: (args.count > 1 ? args[1] as? String : nil) ?? "",
+                                                         from: injector.contextName, senderURL: injector.webView?.url?.absoluteString)
+            case "message": injector.broker.portMessageFromClient(portId: portId, message: args.count > 1 ? args[1] : nil)
+            case "disconnect": injector.broker.portDisconnect(portId: portId, origin: "client")
+            default: break
+            }
+            return (NSNull(), nil)
         }
         // Everything else is a synchronous self-service Tier-1 call.
         do { return (try injector.broker.handle(env), nil) }

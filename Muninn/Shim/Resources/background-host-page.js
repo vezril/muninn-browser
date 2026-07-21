@@ -49,6 +49,8 @@
         case "workerRejection":
         case "audit":
         case "scenario":
+        case "portPost":            // worker port.postMessage -> native -> client port
+        case "portDisconnectHost":  // worker port.disconnect -> native -> client
           audit(d);
           break;
       }

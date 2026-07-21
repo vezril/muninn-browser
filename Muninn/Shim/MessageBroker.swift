@@ -20,6 +20,11 @@ final class MessageBroker: NSObject {
     /// page or the host worker (shared broker, single-tab MVP).
     let frameRegistry = FrameRegistry()
 
+    /// Native fetch proxy (change `native-fetch-proxy`) — gives the extension worker
+    /// CORS-bypassed, `*.proton.me`-scoped network access. Reached ONLY via the host's
+    /// `broker` handler (`performFetch`), never a page content world.
+    private let fetchProxy = NativeFetchProxy()
+
     /// Audit sink — every unmodelled access + host lifecycle event lands here.
     private(set) var auditLog: [[String: Any]] = []
     var onAudit: (([String: Any]) -> Void)?
@@ -261,18 +266,57 @@ final class MessageBroker: NSObject {
     /// tokens, only direction + sender host + timing). Set solely in the gate run.
     var onCrossContextRelay: ((_ direction: String, _ senderHost: String) -> Void)?
 
+    /// E6 gate observation for the externally_connectable path: the message `type`
+    /// (a control discriminator like "pass-installed" — NEVER payload/credentials),
+    /// the sender host, and whether the worker actually responded (round-trip
+    /// completion). Set only in the gate run.
+    var onExternalRelay: ((_ type: String, _ senderHost: String, _ responded: Bool) -> Void)?
+
+    /// E6 gate observation for the native fetch proxy: HTTP method + host + status ONLY
+    /// (never path — the fork selector lives there — query, headers, or body). Lets the
+    /// gate see the fork request sequence and which one fails. Set only in the gate run.
+    var onFetchProbe: ((_ method: String, _ host: String, _ status: Int, _ errored: Bool) -> Void)?
+
     func routeSendMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
+        // Internal (isolated content script) sender: carries the canonical id.
+        let sender: [String: Any] = [
+            "id": PassBundle.canonicalID, "url": senderURL ?? "",
+            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
+        ]
+        return await route(key: "runtime.onMessage", message: message, sender: sender, senderURL: senderURL)
+    }
+
+    /// Page MAIN-world `chrome.runtime.sendMessage(extId, msg)` on an
+    /// `externally_connectable` origin → the host worker's `onMessageExternal`
+    /// listeners (E6 auth-fork detection). The sender is an EXTERNAL web sender —
+    /// it carries `url`/`origin`/`tab` but NO extension `id` (Chrome semantics: a
+    /// web page is not the extension).
+    func routeExternalMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
+        let origin = senderURL.flatMap { URL(string: $0).flatMap { u in
+            u.scheme.flatMap { s in u.host.map { h in "\(s)://\(h)" } } } }
+        let sender: [String: Any] = [
+            "url": senderURL ?? "", "origin": origin ?? "",
+            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
+        ]
+        // Gate signal: message TYPE only (safe discriminator), not payload.
+        let type = (message as? [String: Any])?["type"] as? String ?? "?"
+        let host = senderURL.flatMap { URL(string: $0)?.host } ?? "?"
+        onExternalRelay?(type, host, false)
+        let result = await route(key: "runtime.onMessageExternal", message: message, sender: sender, senderURL: senderURL)
+        onExternalRelay?(type, host, !(result is NSNull) && result != nil)
+        return result
+    }
+
+    /// Shared cross-context request/response: push `key` into the host worker with
+    /// `{message, sender, respId}` and await the worker's `sendResponse`.
+    private func route(key: String, message: Any?, sender: [String: Any], senderURL: String?) async -> Any? {
         guard contexts["host"] != nil else { return NSNull() }
         let senderHost = senderURL.flatMap { URL(string: $0)?.host } ?? "?"
         onCrossContextRelay?("relay-in", senderHost)
         respSeq += 1
         let id = "resp\(respSeq)"
-        let sender: [String: Any] = [
-            "id": PassBundle.canonicalID, "url": senderURL ?? "",
-            "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
-        ]
         let env: [String: Any] = [
-            "__shim": "push", "key": "runtime.onMessage",
+            "__shim": "push", "key": key,
             "args": [message ?? NSNull(), sender], "respId": id,
         ]
         let box = await withCheckedContinuation { (cont: CheckedContinuation<AnyBox, Never>) in
@@ -287,9 +331,69 @@ final class MessageBroker: NSObject {
         return box.value
     }
 
+    /// `__fetch/request` from the background worker → native `URLSession` proxy
+    /// (CORS-bypassed). Parses the spec into Sendable primitives on the main actor,
+    /// awaits the proxy actor, and marshals the JS reply. Allowlist + locality are the
+    /// SSRF boundary (see `NativeFetchProxy`; wired only in `BackgroundHost.HostBridge`).
+    func performFetch(_ env: [String: Any]) async -> Any? {
+        let spec = (env["args"] as? [Any])?.first as? [String: Any] ?? [:]
+        guard let url = spec["url"] as? String else { return ["__error": "bad spec"] }
+        let method = spec["method"] as? String ?? "GET"
+        var headers: [String: String] = [:]
+        if let h = spec["headers"] as? [String: Any] { for (k, v) in h { headers[k] = String(describing: v) } }
+        let bodyBase64 = spec["bodyBase64"] as? String
+
+        let r = await fetchProxy.perform(url: url, method: method, headers: headers, bodyBase64: bodyBase64)
+        // Gate probe: method + host + status only (never path/query/headers/body).
+        onFetchProbe?(method, URL(string: url)?.host ?? "?", r.status, r.error != nil)
+        if let error = r.error { return ["__error": error] }
+        return [
+            "status": r.status, "statusText": r.statusText, "headers": r.headers,
+            "bodyBase64": r.bodyBase64, "finalURL": r.finalURL, "redirected": r.redirected,
+        ]
+    }
+
     /// Called when a worker's `sendResponse` comes back through the host relay.
     func resolveResponse(id: String, result: Any?) {
         if let cont = pending.removeValue(forKey: id) { cont.resume(returning: AnyBox(value: result ?? NSNull())) }
+    }
+
+    // MARK: - cross-context ports (E7 — popup ⇄ host worker)
+
+    /// portId → the CLIENT context ("popup"/"page"); the other end is always the host
+    /// worker (`background.js` `onConnect`). The popup drives its whole UI over this port.
+    private var portClient: [String: String] = [:]
+
+    /// `runtime.connect(id,{name})` from a client (popup/page) → open a port to the host
+    /// worker's `onConnect`.
+    func portConnect(portId: String, name: String, from clientContext: String, senderURL: String?) {
+        guard contexts["host"] != nil else { return }
+        portClient[portId] = clientContext
+        let sender: [String: Any] = ["id": PassBundle.canonicalID, "url": senderURL ?? ""]
+        deliver(["__shim": "connect", "portId": portId, "name": name, "sender": sender], to: "host")
+    }
+
+    /// A client port `postMessage` → the host worker's port `onMessage`.
+    func portMessageFromClient(portId: String, message: Any?) {
+        guard portClient[portId] != nil else { return }
+        deliver(["__shim": "portMessage", "portId": portId, "message": message ?? NSNull()], to: "host")
+    }
+
+    /// A host worker port `postMessage` → the client port's `onMessage`.
+    func portMessageFromHost(portId: String, message: Any?) {
+        guard let client = portClient[portId] else { return }
+        deliver(["__shim": "push", "key": "__port.message", "portId": portId,
+                 "message": message ?? NSNull(), "args": []], to: client)
+    }
+
+    /// Port teardown from either end → notify the other and forget it.
+    func portDisconnect(portId: String, origin: String) {
+        guard let client = portClient.removeValue(forKey: portId) else { return }
+        if origin == "host" {
+            deliver(["__shim": "push", "key": "__port.disconnect", "portId": portId, "args": []], to: client)
+        } else {
+            deliver(["__shim": "portDisconnect", "portId": portId], to: "host")
+        }
     }
 
     /// Fire the extension lifecycle event so background.js runs its install /

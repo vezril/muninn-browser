@@ -21,6 +21,8 @@
   // native on boot (below) and replaces the -1.
   var currentFrameId = 0;
   try { if (g.window && g.window.top !== g.window.self) currentFrameId = -1; } catch (_) { currentFrameId = -1; }
+  var portReg = Object.create(null); // portId -> {msg:[], disc:[], port, close}
+  var portSeq = 0;
 
   function callNative(ns, method, args) {
     if (!broker) return Promise.reject(new Error("no isolated broker"));
@@ -81,12 +83,26 @@
       base.getURL = SYNC_RUNTIME.getURL; base.getManifest = SYNC_RUNTIME.getManifest;
       base.getFrameId = SYNC_RUNTIME.getFrameId; base.lastError = null;
       Object.defineProperty(base, "id", { get: function () { return CANONICAL_ID; }, enumerable: true });
-      base.connect = function () {
-        var disc = [];
-        var port = { name: "", onMessage: eventHub("runtime.__deadPortMsg"),
-          onDisconnect: { addListener: function (f) { disc.push(f); }, removeListener: function () {} },
-          postMessage: function () {}, disconnect: function () { disc.forEach(function (f) { try { f(port); } catch (_) {} }); } };
-        return port; // synchronous inert Port (E5 audit decides if real ports are needed)
+      // Real cross-context port (E7): connect(id?, {name}?) → a live port to the host
+      // worker's onConnect, over the bus. Synchronous return (Chrome contract).
+      base.connect = function (a, b) {
+        var info = (b && typeof b === "object") ? b : (a && typeof a === "object") ? a : {};
+        var name = info.name || "";
+        portSeq += 1; var portId = "cport-" + portSeq;
+        var msgL = [], discL = [], open = true;
+        var port = {
+          name: name,
+          onMessage: { addListener: function (f) { msgL.push(f); },
+                       removeListener: function (f) { var i = msgL.indexOf(f); if (i >= 0) msgL.splice(i, 1); } },
+          onDisconnect: { addListener: function (f) { discL.push(f); },
+                          removeListener: function (f) { var i = discL.indexOf(f); if (i >= 0) discL.splice(i, 1); } },
+          postMessage: function (m) { if (open && broker) broker.postMessage({ ns: "__port", method: "message", args: [portId, m] }); },
+          disconnect: function () { if (!open) return; open = false; delete portReg[portId];
+                                    if (broker) broker.postMessage({ ns: "__port", method: "disconnect", args: [portId] }); },
+        };
+        portReg[portId] = { msg: msgL, disc: discL, port: port, close: function () { open = false; } };
+        if (broker) broker.postMessage({ ns: "__port", method: "connect", args: [portId, name] });
+        return port;
       };
     }
     return new Proxy(base, {
@@ -121,9 +137,19 @@
     },
   });
 
-  // Inbound native → content (events, onMessage delivery).
+  // Inbound native → content (events, onMessage delivery, port traffic).
   g.__muninnContentPush = function (env) {
     if (!env || !env.key) return;
+    if (env.key === "__port.message") {
+      var pm = portReg[env.portId];
+      if (pm) pm.msg.forEach(function (f) { try { f(env.message, pm.port); } catch (_) {} });
+      return;
+    }
+    if (env.key === "__port.disconnect") {
+      var pd = portReg[env.portId];
+      if (pd) { pd.close(); delete portReg[env.portId]; pd.disc.forEach(function (f) { try { f(pd.port); } catch (_) {} }); }
+      return;
+    }
     var l = listeners[env.key] || [];
     var a = env.args || [];
     if (env.key === "runtime.onMessage" || env.key === "runtime.onMessageExternal") {
@@ -141,6 +167,34 @@
   // Install ONLY in this isolated world's global (never MAIN).
   g.chrome = api;
   g.browser = api;
+
+  // externally_connectable bridge (E6): the MAIN-world chrome.runtime shim (only
+  // present on manifest externally_connectable hosts) posts sendMessage here via
+  // window.postMessage; relay to native onMessageExternal and post the response
+  // back to MAIN. Double-gated: only when THIS frame's own host is blessed and the
+  // message is same-origin (a hostile cross-origin frame can't spoof it, and the
+  // native side re-checks the origin). Uses the DOM window (shared with MAIN).
+  var EC_HOSTS = [];
+  try {
+    var ecm = (MANIFEST.externally_connectable && MANIFEST.externally_connectable.matches) || [];
+    EC_HOSTS = ecm.map(function (p) { try { return new URL(p.replace("/*", "/")).host.toLowerCase(); } catch (_) { return null; } })
+                  .filter(Boolean);
+  } catch (_) {}
+  try {
+    if (broker && EC_HOSTS.indexOf(String(window.location.host).toLowerCase()) >= 0) {
+      window.addEventListener("message", function (ev) {
+        var d = ev && ev.data;
+        if (!d || d.__muninnExt !== "sendMessage") return;
+        if (ev.origin !== window.location.origin) return; // same-frame only
+        var reqId = d.reqId;
+        function reply(result) {
+          window.postMessage({ __muninnExtResp: true, reqId: reqId, result: (result === undefined ? null : result) },
+                             window.location.origin);
+        }
+        callNative("runtime", "__externalMessage", [d.message]).then(reply, function () { reply(null); });
+      });
+    }
+  } catch (_) {}
 
   // Resolve THIS frame's id from native (message.frameInfo → FrameRegistry). Async,
   // but getFrameId's callers run after boot, so the cached id is ready in time; the

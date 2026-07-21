@@ -33,6 +33,20 @@ enum PassBundle {
 
     static var version: String { manifest["version"] as? String ?? "unknown" }
 
+    /// Exact hosts from the manifest's `externally_connectable.matches` (e.g.
+    /// `account.proton.me`, `pass.proton.me`) — the ONLY origins on which the page
+    /// MAIN world may receive the narrow `chrome.runtime` externally_connectable
+    /// bridge (E6). Derived from the manifest so it stays in parity with the vendored
+    /// bundle; Chrome match-pattern host semantics are an exact host match.
+    static var externallyConnectableHosts: [String] {
+        guard let ec = manifest["externally_connectable"] as? [String: Any],
+              let matches = ec["matches"] as? [String] else { return [] }
+        return matches.compactMap { pattern in
+            // "https://account.proton.me/*" → host "account.proton.me"
+            URL(string: pattern.replacingOccurrences(of: "/*", with: "/"))?.host?.lowercased()
+        }
+    }
+
     /// Base URL of the extension origin, e.g. muninn-ext://<id>/
     static var originURL: URL {
         URL(string: "\(scheme)://\(canonicalID)/")!
