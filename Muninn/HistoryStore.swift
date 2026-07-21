@@ -12,12 +12,14 @@ final class HistoryStore {
     private let cap = 500
     private(set) var entries: [HistoryEntry] = []
 
-    init() {
+    /// `fileName` is per-profile (e.g. "history.json" for the default profile,
+    /// "history-<profileId>.json" for others) so history stays isolated per profile.
+    init(fileName: String = "history.json") {
         let base = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                     ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("Muninn", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        fileURL = base.appendingPathComponent("history.json")
+        fileURL = base.appendingPathComponent(fileName)
         if let data = try? Data(contentsOf: fileURL),
            let list = try? JSONDecoder().decode([HistoryEntry].self, from: data) {
             entries = list

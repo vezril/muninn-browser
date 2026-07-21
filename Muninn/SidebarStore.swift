@@ -1,5 +1,17 @@
 import Foundation
 
+/// A browsing profile — its own cookie/login/storage jar (a persistent `WKWebsiteDataStore`
+/// keyed by `id`). Workspaces belong to a profile; tabs in them use that profile's data store.
+struct Profile: Codable, Identifiable {
+    var id: UUID
+    var name: String
+    var colorIndex: Int
+
+    init(id: UUID = UUID(), name: String, colorIndex: Int = 1) {
+        self.id = id; self.name = name; self.colorIndex = colorIndex
+    }
+}
+
 /// A named, colourable space with its own favourites / pinned tabs / folders (and regular
 /// tabs). Switching workspaces swaps the visible sets.
 struct Workspace: Codable, Identifiable {
@@ -11,9 +23,11 @@ struct Workspace: Codable, Identifiable {
     var colorHex: String?
     /// Legacy palette index (kept for migration from the first workspaces build).
     var colorIndex: Int?
+    /// Owning profile (its cookie jar); nil → the default profile.
+    var profileId: UUID?
 
-    init(id: UUID = UUID(), name: String, icon: String? = nil, colorHex: String? = nil) {
-        self.id = id; self.name = name; self.icon = icon; self.colorHex = colorHex
+    init(id: UUID = UUID(), name: String, icon: String? = nil, colorHex: String? = nil, profileId: UUID? = nil) {
+        self.id = id; self.name = name; self.icon = icon; self.colorHex = colorHex; self.profileId = profileId
     }
 }
 
@@ -51,6 +65,7 @@ struct SidebarState: Codable {
     var folders: [Folder] = []
     var workspaces: [Workspace] = []
     var activeWorkspace: String?
+    var profiles: [Profile] = []
 }
 
 /// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in

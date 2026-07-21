@@ -17,7 +17,8 @@ final class AppShell: NSObject {
     private var activeIndex = 0
     private var nextTabId = 0
     private let store = SidebarStore()
-    private let history = HistoryStore()
+    /// Per-profile history (isolated so autocomplete/suggestions don't leak across profiles).
+    private var historyStores: [UUID: HistoryStore] = [:]
     /// Recently closed regular tabs (for Cmd+Shift+T), most-recent last.
     private var closedTabs: [SavedTab] = []
     private var palette: CommandPalette?
@@ -41,6 +42,10 @@ final class AppShell: NSObject {
     /// Workspaces (each owns its favourites / pins / folders / regular tabs).
     private var workspaces: [Workspace] = []
     private var activeWorkspaceId = UUID()
+    /// Profiles (separate cookie/login jars). The default profile uses the shared store.
+    private var profiles: [Profile] = []
+    private var defaultProfileId = UUID()
+    private var dataStores: [UUID: WKWebsiteDataStore] = [:]
     /// Remembers the last-active tab id per workspace (restored on switch).
     private var lastActiveTabId: [UUID: Int] = [:]
     private let workspaceBar = NSStackView()
@@ -104,23 +109,30 @@ final class AppShell: NSObject {
         activeWorkspaceId = saved.activeWorkspace.flatMap(UUID.init)
             .flatMap { id in workspaces.contains { $0.id == id } ? id : nil } ?? defaultWs
 
+        // Profiles — ensure a default; it keeps the shared store so existing logins survive.
+        profiles = saved.profiles.isEmpty ? [Profile(name: "Personal", colorIndex: 1)] : saved.profiles
+        defaultProfileId = profiles[0].id
+        let profileIds = Set(profiles.map { $0.id })
+
         // Folders — assign any pre-workspaces folder to the default workspace.
         folders = saved.folders.map { var f = $0; if f.workspaceId == nil { f.workspaceId = defaultWs }; return f }
         let folderIds = Set(folders.map { $0.id })
         let wsIds = Set(workspaces.map { $0.id })
+        // Drop dangling workspace profile refs.
+        workspaces = workspaces.map { var w = $0; if let p = w.profileId, !profileIds.contains(p) { w.profileId = nil }; return w }
 
         // First (session) regular tab in the active workspace, then restore saved tabs.
-        let first = makeTab(); first.workspaceId = activeWorkspaceId; tabs.append(first)
+        tabs.append(makeTab(workspaceId: activeWorkspaceId))
         for s in saved.tabs {
             guard let url = URL(string: s.url) else { continue }
-            let tab = makeTab()
+            let wid = s.workspaceId.flatMap(UUID.init).flatMap { wsIds.contains($0) ? $0 : nil } ?? defaultWs
+            let tab = makeTab(workspaceId: wid)
             tab.kind = s.kind
             tab.pendingURL = url
             tab.homeURL = url // anchored site for Peek (restored pinned/favourite)
             tab.setInitialTitle(s.title)
             tab.setInitialFavicon(base64: s.faviconBase64)
             if let fid = s.folderId.flatMap(UUID.init), folderIds.contains(fid) { tab.folderId = fid }
-            tab.workspaceId = s.workspaceId.flatMap(UUID.init).flatMap { wsIds.contains($0) ? $0 : nil } ?? defaultWs
             tabs.append(tab)
         }
 
@@ -165,9 +177,19 @@ final class AppShell: NSObject {
 
     // MARK: - tabs
 
-    private func makeTab() -> BrowserTab {
+    /// Create a tab in `workspaceId` (defaults to the active workspace), backed by that
+    /// workspace's profile data store (its cookie/login jar).
+    private func makeTab(workspaceId: UUID? = nil) -> BrowserTab {
+        let wid = workspaceId ?? activeWorkspaceId
         let id = nextTabId; nextTabId += 1
-        let tab = BrowserTab(id: id, broker: broker)
+        let tab = BrowserTab(id: id, broker: broker, dataStore: dataStore(forWorkspace: wid))
+        tab.workspaceId = wid
+        configureTab(tab)
+        return tab
+    }
+
+    /// Wire a tab's callbacks (used by `makeTab` and when re-creating tabs on a profile change).
+    private func configureTab(_ tab: BrowserTab) {
         tab.onChange = { [weak self, weak tab] in
             guard let self, let tab else { return }
             self.rebuildTabBar()
@@ -175,7 +197,7 @@ final class AppShell: NSObject {
                 self.updateChrome()
                 if let url = tab.webView.url {
                     self.storeForkStateIfPresent(url)
-                    self.history.record(url: url, title: tab.title)
+                    self.currentHistory.record(url: url, title: tab.title)
                 }
             }
         }
@@ -201,7 +223,6 @@ final class AppShell: NSObject {
                 if peek { self?.showPeek(url) } else { self?.openInNewTab(url) }
             }
         }
-        return tab
     }
 
     /// A cross-site link click in a pinned/favourite tab opens a Peek instead of navigating
@@ -398,7 +419,7 @@ final class AppShell: NSObject {
     /// Muninn's new-tab landing page: a search box (DuckDuckGo, or a typed URL) — a
     /// placeholder we can grow into a real start page later.
     private func loadLanding(_ tab: BrowserTab) {
-        let hosts = Array(history.rankedHosts().prefix(60))
+        let hosts = Array(currentHistory.rankedHosts().prefix(60))
         let json = (try? JSONSerialization.data(withJSONObject: hosts))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         let html = Self.landingHTML.replacingOccurrences(of: "__MUNINN_HOSTS__", with: json)
@@ -497,7 +518,8 @@ final class AppShell: NSObject {
         store.save(SidebarState(tabs: tabs.filter { $0.kind != .regular }.compactMap { $0.saved() },
                                 folders: folders,
                                 workspaces: workspaces,
-                                activeWorkspace: activeWorkspaceId.uuidString))
+                                activeWorkspace: activeWorkspaceId.uuidString,
+                                profiles: profiles))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
@@ -670,6 +692,79 @@ final class AppShell: NSObject {
     // MARK: - workspaces
 
     private func workspaceIndex(_ id: UUID) -> Int? { workspaces.firstIndex { $0.id == id } }
+    private func profileIndex(_ id: UUID) -> Int? { profiles.firstIndex { $0.id == id } }
+
+    // MARK: - profiles (separate cookie/login jars)
+
+    /// The (isolated, persistent) data store for a profile. The default profile keeps the shared
+    /// `.default()` store so existing logins survive; other profiles get their own jar.
+    private func dataStore(forProfile id: UUID) -> WKWebsiteDataStore {
+        if id == defaultProfileId { return .default() }
+        if let s = dataStores[id] { return s }
+        let s = WKWebsiteDataStore(forIdentifier: id)
+        dataStores[id] = s
+        return s
+    }
+    private func dataStore(forWorkspace wid: UUID) -> WKWebsiteDataStore {
+        dataStore(forProfile: workspaces.first { $0.id == wid }?.profileId ?? defaultProfileId)
+    }
+
+    /// The active workspace's profile.
+    private var currentProfileId: UUID {
+        workspaces.first { $0.id == activeWorkspaceId }?.profileId ?? defaultProfileId
+    }
+    /// Per-profile history store (the default profile keeps `history.json`).
+    private func history(forProfile id: UUID) -> HistoryStore {
+        if let h = historyStores[id] { return h }
+        let name = id == defaultProfileId ? "history.json" : "history-\(id.uuidString).json"
+        let h = HistoryStore(fileName: name)
+        historyStores[id] = h
+        return h
+    }
+    /// History for the active profile — feeds recording, autocomplete, and the command bar.
+    private var currentHistory: HistoryStore { history(forProfile: currentProfileId) }
+
+    /// Assign a workspace to a profile and re-create its tabs in that profile's data store.
+    @objc private func setWorkspaceProfile(_ s: NSMenuItem) {
+        guard let comps = (s.representedObject as? String)?.split(separator: "|"), comps.count == 2,
+              let wid = UUID(uuidString: String(comps[0])), let pid = UUID(uuidString: String(comps[1])),
+              let wi = workspaceIndex(wid) else { return }
+        workspaces[wi].profileId = pid
+        reprofileWorkspace(wid)
+        rebuildTabBar(); persist()
+    }
+
+    @objc private func newProfileForWorkspace(_ s: NSMenuItem) {
+        guard let wid = (s.representedObject as? String).flatMap(UUID.init), let wi = workspaceIndex(wid) else { return }
+        guard let name = promptForText(title: "New Profile", message: "Name this profile:", initial: "Work") else { return }
+        let p = Profile(name: name, colorIndex: profiles.count % Folder.palette.count)
+        profiles.append(p)
+        workspaces[wi].profileId = p.id
+        reprofileWorkspace(wid)
+        rebuildTabBar(); persist()
+    }
+
+    /// Re-create every tab in a workspace so they use its (new) profile's data store. Regular
+    /// tabs reload; pinned/favourite tabs stay lazy and reload on next select.
+    private func reprofileWorkspace(_ wid: UUID) {
+        let store = dataStore(forWorkspace: wid)
+        let active = tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil
+        for i in tabs.indices where tabs[i].workspaceId == wid {
+            let old = tabs[i]
+            let fresh = BrowserTab(id: old.id, broker: broker, dataStore: store)
+            fresh.kind = old.kind; fresh.folderId = old.folderId; fresh.workspaceId = wid
+            fresh.splitGroupId = old.splitGroupId; fresh.homeURL = old.homeURL
+            fresh.setInitialTitle(old.title)
+            fresh.pendingURL = old.currentURL // reload lazily (or on show)
+            configureTab(fresh)
+            if old.id == miniTabId { stopMiniPlayer() }
+            old.stop()
+            tabs[i] = fresh
+        }
+        if let a = active, let ai = tabs.firstIndex(where: { $0.id == a.id }) { activeIndex = ai }
+        activeTab.ensureLoaded()
+        showActiveWebView()
+    }
 
     private static let defaultWorkspaceIcons = ["🏠", "💼", "🎨", "📚", "🎮", "🛒", "⭐️", "🌙"]
 
@@ -805,6 +900,23 @@ final class AppShell: NSObject {
         menu.addItem(item("Rename Workspace…", #selector(renameWorkspace(_:))))
         menu.addItem(item("Change Icon…", #selector(changeWorkspaceIcon(_:))))
         menu.addItem(item("Background Colour…", #selector(pickWorkspaceColor(_:))))
+
+        // Profile — the workspace's cookie/login jar.
+        let profileItem = NSMenuItem(title: "Profile", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let currentProfile = workspaceIndex(id).flatMap { workspaces[$0].profileId } ?? defaultProfileId
+        for p in profiles {
+            let m = NSMenuItem(title: p.name, action: #selector(setWorkspaceProfile(_:)), keyEquivalent: "")
+            m.target = self
+            m.representedObject = "\(id.uuidString)|\(p.id.uuidString)"
+            if p.id == currentProfile { m.state = .on }
+            sub.addItem(m)
+        }
+        sub.addItem(.separator())
+        sub.addItem(item("New Profile…", #selector(newProfileForWorkspace(_:))))
+        profileItem.submenu = sub
+        menu.addItem(profileItem)
+
         menu.addItem(.separator())
         let del = item("Delete Workspace", #selector(deleteWorkspace(_:)))
         if workspaces.count <= 1 { del.action = nil } // keep at least one workspace
@@ -1239,7 +1351,7 @@ final class AppShell: NSObject {
         guard let content = window.contentView else { return }
         let p = CommandPalette()
         p.openTabs = tabs.filter { $0.workspaceId == activeWorkspaceId }.map { ($0.id, $0.title, $0.currentURL) }
-        p.history = history.entries
+        p.history = currentHistory.entries
         p.onClose = { [weak self] in self?.closeCommandPalette() }
         p.onExecute = { [weak self] item in
             guard let self else { return }
@@ -2122,7 +2234,7 @@ extension AppShell: NSTextFieldDelegate {
         let sel = editor.selectedRange
         // Only when typing forward at the very end (not mid-string, not with a selection).
         guard sel.length == 0, sel.location == len, !text.isEmpty else { return }
-        guard let completion = history.bestCompletion(for: text),
+        guard let completion = currentHistory.bestCompletion(for: text),
               (completion as NSString).length > len else { return }
         addressField.stringValue = completion
         editor.selectedRange = NSRange(location: len, length: (completion as NSString).length - len)
