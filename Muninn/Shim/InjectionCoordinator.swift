@@ -23,6 +23,13 @@ final class InjectionCoordinator: NSObject {
     /// delivery targets the right tab). Default "page" for single-tab / tests.
     let contextName: String
 
+    /// Optional gate on main-frame navigations — return `.cancel` to intercept (e.g. Peek
+    /// opens a link from a pinned tab in a preview instead of navigating the tab). nil = allow.
+    var onNavigationAction: ((WKNavigationAction) -> WKNavigationActionPolicy)?
+    /// Called for `target="_blank"` / `window.open` (no WKWebView is created here — the host
+    /// decides: a new tab, or a Peek from a pinned tab).
+    var onCreateWebView: ((WKNavigationAction) -> Void)?
+
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
     func note(_ kind: String, _ info: [String: Any] = [:]) {
@@ -101,6 +108,7 @@ final class InjectionCoordinator: NSObject {
         configHook?(config)
         self.webView = WKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
+        self.webView.uiDelegate = self
         // Gate-mode only: allow Safari Web Inspector on the page (diagnostics). Never
         // in a shipping run — inspection is a debug affordance, and the gate is a
         // human-supervised session (ground rules 1+2).
@@ -175,6 +183,11 @@ extension InjectionCoordinator: WKNavigationDelegate {
     /// old — NOT on provisional start, so a failed/cancelled navigation attempt can't
     /// blank out the subframes of a page that's still on screen. The main frame id
     /// stays 0; it re-registers on its next message.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        decisionHandler(onNavigationAction?(navigationAction) ?? .allow)
+    }
+
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         broker.frameRegistry.resetSubframes()
     }
@@ -196,6 +209,17 @@ extension InjectionCoordinator: WKNavigationDelegate {
             if case .failure(let e) = result { self?.note("forkFailed", ["error": String(describing: e)]) }
             else { self?.note("forkInjected") }
         }
+    }
+}
+
+extension InjectionCoordinator: WKUIDelegate {
+    /// `target="_blank"` / `window.open`: don't create a nested web view — hand the request
+    /// to the host (new tab, or a Peek from a pinned tab).
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        NSLog("[peek] createWebView (blank) url=%@", navigationAction.request.url?.absoluteString ?? "?")
+        onCreateWebView?(navigationAction)
+        return nil
     }
 }
 
