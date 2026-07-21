@@ -19,6 +19,16 @@ final class AppShell: NSObject {
     private let store = SidebarStore()
     /// Pinned-tab folders (collapsible, renamable, colourable).
     private var folders: [Folder] = []
+    /// Workspaces (each owns its favourites / pins / folders / regular tabs).
+    private var workspaces: [Workspace] = []
+    private var activeWorkspaceId = UUID()
+    /// Remembers the last-active tab id per workspace (restored on switch).
+    private var lastActiveTabId: [UUID: Int] = [:]
+    private let workspaceBar = NSStackView()
+    /// Floating name shown while hovering a workspace chip.
+    private let workspaceHoverLabel = NSTextField(labelWithString: "")
+    /// Workspace currently targeted by the live NSColorPanel.
+    private var colorPickWorkspace: UUID?
     private var activeTab: BrowserTab { tabs[activeIndex] }
     private var activeWebView: WKWebView { activeTab.webView }
 
@@ -27,14 +37,21 @@ final class AppShell: NSObject {
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
-    private let sidebar = NSView()
+    private let sidebar = HoverView()
     private let tabStack = NSStackView()
-    private var sidebarWidthConstraint: NSLayoutConstraint!
-    private var sidebarOpen = true
+    /// Slide offset of the sidebar (0 = shown, -sidebarWidth = tucked off-screen left).
+    private var sidebarLeadingConstraint: NSLayoutConstraint!
+    /// Web card leading pinned to the sidebar (docked) vs the window edge (collapsed/peek).
+    private var webLeadingDocked: NSLayoutConstraint!
+    private var webLeadingFull: NSLayoutConstraint!
+    private var sidebarOpen = true  // pinned-open
+    private var peeking = false     // temporarily revealed by hovering the left edge
     private let toggleButton = NSButton()
-    private let revealButton = NSButton() // shown only when the sidebar is collapsed
+    private var mouseMonitor: Any?
     private static let sidebarWidth: CGFloat = 230
-    private static let topInset: CGFloat = 8 // sidebar/content top padding below the title bar
+    private static let topInset: CGFloat = 30 // clears the traffic-light strip (full-size content)
+    private static let webCardInset: CGFloat = 8 // margin around the floating web card
+    private static let webCardTopInset: CGFloat = 34 // clears the transparent title bar
     private let webContainer = NSView()
     private var keyMonitor: Any?
     /// Only during an explicit sign-in do we let the extension's `onInstalled` →
@@ -49,15 +66,30 @@ final class AppShell: NSObject {
         signInMode = env["MUNINN_FORKINIT"] != nil || env["MUNINN_POPUP"] != nil || env["MUNINN_SIGNIN"] != nil
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
+        // Extend the (tinted) content under the traffic-light bar; no title text.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         super.init()
 
-        // First tab (regular), then restore saved favourites/pinned (lazy) + folders.
-        tabs.append(makeTab())
         let saved = store.load()
-        folders = saved.folders
+
+        // Workspaces — migrate: ensure at least one, then resolve the active one.
+        workspaces = saved.workspaces.isEmpty
+            ? [Workspace(name: "Personal", icon: "🏠", colorHex: Self.folderColor(1).toHex)]
+            : saved.workspaces
+        let defaultWs = workspaces[0].id
+        activeWorkspaceId = saved.activeWorkspace.flatMap(UUID.init)
+            .flatMap { id in workspaces.contains { $0.id == id } ? id : nil } ?? defaultWs
+
+        // Folders — assign any pre-workspaces folder to the default workspace.
+        folders = saved.folders.map { var f = $0; if f.workspaceId == nil { f.workspaceId = defaultWs }; return f }
         let folderIds = Set(folders.map { $0.id })
+        let wsIds = Set(workspaces.map { $0.id })
+
+        // First (session) regular tab in the active workspace, then restore saved tabs.
+        let first = makeTab(); first.workspaceId = activeWorkspaceId; tabs.append(first)
         for s in saved.tabs {
             guard let url = URL(string: s.url) else { continue }
             let tab = makeTab()
@@ -66,6 +98,7 @@ final class AppShell: NSObject {
             tab.setInitialTitle(s.title)
             tab.setInitialFavicon(base64: s.faviconBase64)
             if let fid = s.folderId.flatMap(UUID.init), folderIds.contains(fid) { tab.folderId = fid }
+            tab.workspaceId = s.workspaceId.flatMap(UUID.init).flatMap { wsIds.contains($0) ? $0 : nil } ?? defaultWs
             tabs.append(tab)
         }
 
@@ -85,7 +118,6 @@ final class AppShell: NSObject {
         showActiveWebView()
 
         loadLanding(activeTab) // default new-tab page (auth-fork paths override in present())
-        window.title = "Muninn"
         window.center()
     }
 
@@ -93,6 +125,7 @@ final class AppShell: NSObject {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         installKeyMonitor()
+        installMouseMonitor()
         let env = ProcessInfo.processInfo.environment
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
@@ -125,7 +158,8 @@ final class AppShell: NSObject {
     }
 
     @objc func newTab() {
-        tabs.append(makeTab())
+        let tab = makeTab(); tab.workspaceId = activeWorkspaceId
+        tabs.append(tab)
         activeIndex = tabs.count - 1
         showActiveWebView()
         rebuildTabBar()
@@ -178,18 +212,21 @@ final class AppShell: NSObject {
     func selectTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
         activeIndex = index
+        lastActiveTabId[activeWorkspaceId] = tabs[index].id
         activeTab.ensureLoaded() // lazily load a restored favourite/pinned tab
         showActiveWebView()
         rebuildTabBar()
     }
 
-    /// Persist favourites + pinned tabs and folder definitions (regular are session-only).
+    /// Persist favourites + pinned tabs, folders, and workspaces (regular tabs are session-only).
     private func persist() {
         // Drop empty folders that no pinned tab references (keeps state tidy).
         let used = Set(tabs.filter { $0.kind == .pinned }.compactMap { $0.folderId })
         folders.removeAll { !used.contains($0.id) }
         store.save(SidebarState(tabs: tabs.filter { $0.kind != .regular }.compactMap { $0.saved() },
-                                folders: folders))
+                                folders: folders,
+                                workspaces: workspaces,
+                                activeWorkspace: activeWorkspaceId.uuidString))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
@@ -283,7 +320,8 @@ final class AppShell: NSObject {
         guard tabs.indices.contains(s.tag) else { return }
         guard let name = promptForText(title: "New Folder", message: "Name this folder:",
                                        initial: "Folder") else { return }
-        let folder = Folder(name: name, colorIndex: folders.count % Folder.palette.count)
+        let folder = Folder(name: name, colorIndex: folders.count % Folder.palette.count,
+                            workspaceId: tabs[s.tag].workspaceId ?? activeWorkspaceId)
         folders.append(folder)
         tabs[s.tag].kind = .pinned
         tabs[s.tag].folderId = folder.id
@@ -327,6 +365,199 @@ final class AppShell: NSObject {
         let f = folders.remove(at: from)
         let t = folderIndex(targetId) ?? folders.count
         folders.insert(f, at: min(max(before ? t : t + 1, 0), folders.count))
+        rebuildTabBar(); persist()
+    }
+
+    // MARK: - workspaces
+
+    private func workspaceIndex(_ id: UUID) -> Int? { workspaces.firstIndex { $0.id == id } }
+
+    private static let defaultWorkspaceIcons = ["🏠", "💼", "🎨", "📚", "🎮", "🛒", "⭐️", "🌙"]
+
+    /// The workspace's background-tint colour (hex → legacy index → default).
+    private func wsColor(_ ws: Workspace) -> NSColor {
+        if let hex = ws.colorHex, let c = NSColor(hex: hex) { return c }
+        if let idx = ws.colorIndex { return Self.folderColor(idx) }
+        return Self.folderColor(1)
+    }
+    /// The workspace's emoji icon (chosen, or a stable default).
+    private func wsIcon(_ ws: Workspace) -> String {
+        if let i = ws.icon, !i.isEmpty { return i }
+        let n = Self.defaultWorkspaceIcons
+        return n[abs(ws.id.uuidString.hashValue) % n.count]
+    }
+
+    /// Tint the sidebar + window background with the active workspace's colour — the visual
+    /// "where am I" cue, extending under the traffic-light bar and around the floating card.
+    private func applyWorkspaceTint() {
+        guard let ws = workspaces.first(where: { $0.id == activeWorkspaceId }) else { return }
+        let base = NSColor.underPageBackgroundColor
+        let tint = (base.blended(withFraction: 0.20, of: wsColor(ws)) ?? base).cgColor
+        sidebar.layer?.backgroundColor = tint
+        window.contentView?.layer?.backgroundColor = tint
+    }
+
+    /// A quick crossfade when switching workspaces (sidebar tint + web card swap).
+    private func animateWorkspaceSwitch() {
+        for layer in [sidebar.layer, webContainer.layer, window.contentView?.layer] {
+            let t = CATransition(); t.type = .fade; t.duration = 0.22
+            layer?.add(t, forKey: "wsSwitch")
+        }
+    }
+
+    /// Rebuild the workspace switcher: one emoji chip per workspace + a "+" to add one.
+    private func rebuildWorkspaceBar() {
+        applyWorkspaceTint()
+        workspaceBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for ws in workspaces { workspaceBar.addArrangedSubview(makeWorkspacePill(ws)) }
+        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New workspace")!,
+                           target: self, action: #selector(addWorkspace))
+        add.isBordered = false
+        add.contentTintColor = .secondaryLabelColor
+        add.translatesAutoresizingMaskIntoConstraints = false
+        add.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        add.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        add.setContentHuggingPriority(.required, for: .horizontal)
+        workspaceBar.addArrangedSubview(add)
+    }
+
+    /// An emoji-only workspace chip, sized to the icon; the active one is ringed in its colour.
+    private func makeWorkspacePill(_ ws: Workspace) -> NSView {
+        let active = ws.id == activeWorkspaceId
+        let color = wsColor(ws)
+        let pill = TabChipView()
+        pill.onSelect = { [weak self] in self?.switchWorkspace(to: ws.id) }
+        pill.menu = workspaceContextMenu(ws.id)
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = 8
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        pill.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        if active {
+            pill.layer?.backgroundColor = color.withAlphaComponent(0.28).cgColor
+            pill.layer?.borderWidth = 2
+            pill.layer?.borderColor = color.cgColor
+        } else {
+            pill.layer?.backgroundColor = NSColor.clear.cgColor
+        }
+
+        let label = NSTextField(labelWithString: wsIcon(ws))
+        label.font = .systemFont(ofSize: 15)
+        label.alignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: pill.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+        ])
+        pill.toolTip = ws.name
+        pill.onHover = { [weak self] inside in self?.showWorkspaceHover(inside ? ws.id : nil) }
+        return pill
+    }
+
+    /// Show the hovered workspace's number + name just above the switcher.
+    private func showWorkspaceHover(_ id: UUID?) {
+        guard let id, let idx = workspaceIndex(id) else { workspaceHoverLabel.isHidden = true; return }
+        workspaceHoverLabel.stringValue = "⌃\(idx + 1)  ·  \(workspaces[idx].name)"
+        workspaceHoverLabel.isHidden = false
+    }
+
+    private func switchWorkspace(to wid: UUID) {
+        guard wid != activeWorkspaceId, workspaces.contains(where: { $0.id == wid }) else { return }
+        lastActiveTabId[activeWorkspaceId] = activeTab.id
+        activeWorkspaceId = wid
+        animateWorkspaceSwitch()
+        if let remembered = lastActiveTabId[wid], let i = tabIndex(id: remembered), tabs[i].workspaceId == wid {
+            activeIndex = i
+        } else if let i = tabs.firstIndex(where: { $0.workspaceId == wid }) {
+            activeIndex = i
+        } else {
+            let t = makeTab(); t.workspaceId = wid; tabs.append(t)
+            activeIndex = tabs.count - 1
+            loadLanding(t)
+        }
+        activeTab.ensureLoaded()
+        showActiveWebView(); rebuildTabBar(); persist()
+    }
+
+    @objc private func addWorkspace() {
+        guard let name = promptForText(title: "New Workspace", message: "Name this workspace:", initial: "Space")
+        else { return }
+        var ws = Workspace(name: name)
+        if let icon = promptForEmoji(initial: "") { ws.icon = icon }
+        ws.colorHex = Self.folderColor(workspaces.count % Folder.palette.count).toHex
+        workspaces.append(ws)
+        switchWorkspace(to: ws.id) // spawns a landing tab in it + persists
+    }
+
+    private func workspaceContextMenu(_ id: UUID) -> NSMenu {
+        let menu = NSMenu()
+        func item(_ t: String, _ a: Selector) -> NSMenuItem {
+            let m = NSMenuItem(title: t, action: a, keyEquivalent: ""); m.target = self
+            m.representedObject = id.uuidString; return m
+        }
+        menu.addItem(item("Rename Workspace…", #selector(renameWorkspace(_:))))
+        menu.addItem(item("Change Icon…", #selector(changeWorkspaceIcon(_:))))
+        menu.addItem(item("Background Colour…", #selector(pickWorkspaceColor(_:))))
+        menu.addItem(.separator())
+        let del = item("Delete Workspace", #selector(deleteWorkspace(_:)))
+        if workspaces.count <= 1 { del.action = nil } // keep at least one workspace
+        menu.addItem(del)
+        return menu
+    }
+
+    @objc private func renameWorkspace(_ s: NSMenuItem) {
+        guard let id = (s.representedObject as? String).flatMap(UUID.init), let i = workspaceIndex(id) else { return }
+        guard let name = promptForText(title: "Rename Workspace", message: "Workspace name:", initial: workspaces[i].name)
+        else { return }
+        workspaces[i].name = name; rebuildWorkspaceBar(); persist()
+    }
+
+    @objc private func changeWorkspaceIcon(_ s: NSMenuItem) {
+        guard let id = (s.representedObject as? String).flatMap(UUID.init), let i = workspaceIndex(id) else { return }
+        guard let icon = promptForEmoji(initial: workspaces[i].icon ?? "") else { return }
+        workspaces[i].icon = icon
+        rebuildWorkspaceBar(); persist()
+    }
+
+    /// Live background-colour picker for a workspace (full NSColorPanel).
+    @objc private func pickWorkspaceColor(_ s: NSMenuItem) {
+        colorPickWorkspace = (s.representedObject as? String).flatMap(UUID.init)
+        let panel = NSColorPanel.shared
+        panel.setTarget(self)
+        panel.setAction(#selector(workspaceColorChanged(_:)))
+        if let id = colorPickWorkspace, let i = workspaceIndex(id) { panel.color = wsColor(workspaces[i]) }
+        panel.makeKeyAndOrderFront(nil)
+    }
+    @objc private func workspaceColorChanged(_ panel: NSColorPanel) {
+        guard let id = colorPickWorkspace, let i = workspaceIndex(id) else { return }
+        workspaces[i].colorHex = panel.color.toHex
+        rebuildTabBar(); persist() // live: retints sidebar + active chip
+    }
+
+    @objc private func deleteWorkspace(_ s: NSMenuItem) {
+        guard workspaces.count > 1, let id = (s.representedObject as? String).flatMap(UUID.init),
+              let i = workspaceIndex(id) else { return }
+        let active = tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil
+        for t in tabs where t.workspaceId == id { t.stop() }
+        tabs.removeAll { $0.workspaceId == id }
+        folders.removeAll { $0.workspaceId == id }
+        workspaces.remove(at: i)
+        lastActiveTabId[id] = nil
+        if activeWorkspaceId == id {
+            activeWorkspaceId = workspaces[0].id
+            if let ai = tabs.firstIndex(where: { $0.workspaceId == activeWorkspaceId }) {
+                activeIndex = ai
+            } else {
+                let t = makeTab(); t.workspaceId = activeWorkspaceId; tabs.append(t)
+                activeIndex = tabs.count - 1; loadLanding(t)
+            }
+            activeTab.ensureLoaded(); showActiveWebView()
+        } else if let a = active, let ai = tabs.firstIndex(where: { $0 === a }) {
+            activeIndex = ai
+        } else {
+            activeIndex = min(activeIndex, tabs.count - 1)
+        }
         rebuildTabBar(); persist()
     }
 
@@ -420,14 +651,48 @@ final class AppShell: NSObject {
         return name.isEmpty ? nil : name
     }
 
+    /// Prompt for a single emoji, auto-opening the macOS emoji picker so the user picks
+    /// one visually (they can also type one). Returns nil on cancel.
+    private func promptForEmoji(initial: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Workspace Icon"
+        alert.informativeText = "Pick an emoji from the picker (or type one), then click OK."
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 30))
+        field.stringValue = initial
+        field.font = .systemFont(ofSize: 20)
+        field.alignment = .center
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        // Open the system emoji picker once the modal loop is running.
+        DispatchQueue.main.async { NSApp.orderFrontCharacterPalette(field) }
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return field.stringValue.first.map(String.init)
+    }
+
     @objc func closeActiveTab() { closeTab(activeIndex) }
 
     func closeTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
-        if tabs.count == 1 { window.performClose(nil); return } // last tab → close window
+        let active = activeTab
+        let closingActive = tabs[index] === active
         tabs[index].stop()
         tabs.remove(at: index)
-        activeIndex = min(activeIndex, tabs.count - 1)
+        if tabs.isEmpty { window.performClose(nil); return } // truly the last tab → close window
+        // If the active workspace now has no tabs, spawn a fresh landing tab in it.
+        if !tabs.contains(where: { $0.workspaceId == activeWorkspaceId }) {
+            let t = makeTab(); t.workspaceId = activeWorkspaceId; tabs.append(t)
+            activeIndex = tabs.count - 1
+            showActiveWebView(); loadLanding(t); rebuildTabBar(); persist(); return
+        }
+        if closingActive {
+            activeIndex = tabs.firstIndex { $0.workspaceId == activeWorkspaceId } ?? 0
+        } else if let ai = tabs.firstIndex(where: { $0 === active }) {
+            activeIndex = ai
+        } else {
+            activeIndex = min(activeIndex, tabs.count - 1)
+        }
         showActiveWebView()
         rebuildTabBar()
         persist()
@@ -437,6 +702,9 @@ final class AppShell: NSObject {
         webContainer.subviews.forEach { $0.removeFromSuperview() }
         let web = activeWebView
         web.translatesAutoresizingMaskIntoConstraints = false
+        web.wantsLayer = true
+        web.layer?.cornerRadius = 10 // clip page content to the floating card's corners
+        web.layer?.masksToBounds = true
         webContainer.addSubview(web)
         NSLayoutConstraint.activate([
             web.topAnchor.constraint(equalTo: webContainer.topAnchor),
@@ -455,10 +723,14 @@ final class AppShell: NSObject {
     }
 
     private func rebuildTabBar() {
+        rebuildWorkspaceBar()
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let favs = tabs.enumerated().filter { $0.element.kind == .favourite }
-        let pins = tabs.enumerated().filter { $0.element.kind == .pinned }
-        let regs = tabs.enumerated().filter { $0.element.kind == .regular }
+        // Only the active workspace's tabs and folders are visible.
+        let ws = activeWorkspaceId
+        let favs = tabs.enumerated().filter { $0.element.kind == .favourite && $0.element.workspaceId == ws }
+        let pins = tabs.enumerated().filter { $0.element.kind == .pinned && $0.element.workspaceId == ws }
+        let regs = tabs.enumerated().filter { $0.element.kind == .regular && $0.element.workspaceId == ws }
+        let wsFolders = folders.filter { $0.workspaceId == ws }
 
         if !favs.isEmpty { tabStack.addArrangedSubview(favouritesRow(favs)) }
 
@@ -466,7 +738,7 @@ final class AppShell: NSObject {
         for (i, tab) in pins where tab.folderId == nil {
             tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
         }
-        for folder in folders {
+        for folder in wsFolders {
             let members = pins.filter { $0.element.folderId == folder.id }
             tabStack.addArrangedSubview(folderHeaderRow(folder, count: members.count))
             if !folder.collapsed {
@@ -477,7 +749,7 @@ final class AppShell: NSObject {
             }
         }
 
-        if !favs.isEmpty || !pins.isEmpty || !folders.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
+        if !favs.isEmpty || !pins.isEmpty || !wsFolders.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
         for (i, tab) in regs { tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex)) }
         tabStack.addArrangedSubview(newTabRow())
     }
@@ -771,8 +1043,6 @@ final class AppShell: NSObject {
         configureButton(backButton, symbol: "chevron.backward", action: #selector(goBack))
         configureButton(forwardButton, symbol: "chevron.forward", action: #selector(goForward))
         configureButton(reloadButton, symbol: "arrow.clockwise", action: #selector(reload))
-        configureButton(revealButton, symbol: "sidebar.left", action: #selector(toggleSidebar))
-        revealButton.isHidden = true // only when collapsed
 
         addressField.placeholderString = "Search or enter a URL"
         addressField.target = self
@@ -795,68 +1065,183 @@ final class AppShell: NSObject {
         tabStack.alignment = .leading
         tabStack.spacing = 3
         tabStack.translatesAutoresizingMaskIntoConstraints = false
+        // Workspace switcher — a row of emoji chips pinned to the BOTTOM of the sidebar.
+        workspaceBar.orientation = .horizontal
+        workspaceBar.spacing = 6
+        workspaceBar.alignment = .centerY
+        workspaceBar.distribution = .fill
+        workspaceBar.translatesAutoresizingMaskIntoConstraints = false
+
+        workspaceHoverLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        workspaceHoverLabel.textColor = .secondaryLabelColor
+        workspaceHoverLabel.lineBreakMode = .byTruncatingTail
+        workspaceHoverLabel.isHidden = true
+        workspaceHoverLabel.translatesAutoresizingMaskIntoConstraints = false
+
         sidebar.addSubview(navRow)
         sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under nav
+        sidebar.addSubview(workspaceBar)
+        sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
         NSLayoutConstraint.activate([
-            navRow.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: Self.topInset),
-            navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            addressField.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 8),
+            navRow.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 6),
+            navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 88), // clear of the traffic lights
+            addressField.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 10),
             addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             addressField.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
             tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+            workspaceBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            workspaceBar.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
+            workspaceBar.widthAnchor.constraint(lessThanOrEqualToConstant: Self.sidebarWidth - 16),
+            workspaceHoverLabel.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
+            workspaceHoverLabel.trailingAnchor.constraint(lessThanOrEqualTo: sidebar.trailingAnchor, constant: -8),
+            workspaceHoverLabel.bottomAnchor.constraint(equalTo: workspaceBar.topAnchor, constant: -5),
+            tabStack.bottomAnchor.constraint(lessThanOrEqualTo: workspaceHoverLabel.topAnchor, constant: -4),
         ])
 
-        // Right area: just the web content (full height).
+        // Right area: the web content as a rounded card floating on the tinted background.
         webContainer.translatesAutoresizingMaskIntoConstraints = false
+        webContainer.wantsLayer = true
+        webContainer.layer?.cornerRadius = 10
+        webContainer.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        webContainer.layer?.masksToBounds = false
+        webContainer.shadow = NSShadow()
+        webContainer.layer?.shadowColor = NSColor.black.cgColor
+        webContainer.layer?.shadowOpacity = 0.18
+        webContainer.layer?.shadowRadius = 9
+        webContainer.layer?.shadowOffset = CGSize(width: 0, height: -2)
+
+        // Sidebar can float ABOVE the web card (overlay on peek). The shadow + rounded
+        // corners are toggled on only while floating so, when docked, it blends seamlessly
+        // with the tinted background.
+        sidebar.layer?.masksToBounds = false
+        sidebar.shadow = NSShadow()
+        sidebar.layer?.shadowColor = NSColor.black.cgColor
+        sidebar.layer?.shadowRadius = 12
+        sidebar.layer?.shadowOffset = CGSize(width: 3, height: 0)
+        sidebar.layer?.shadowOpacity = 0 // docked by default
+
         let content = NSView()
-        content.addSubview(sidebar)
+        content.wantsLayer = true // holds the workspace tint behind the floating card
         content.addSubview(webContainer)
-        content.addSubview(revealButton) // floats top-left when the sidebar is hidden
+        content.addSubview(sidebar)        // above the web card
         window.contentView = content
 
-        sidebarWidthConstraint = sidebar.widthAnchor.constraint(equalToConstant: Self.sidebarWidth)
+        sidebarLeadingConstraint = sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 0)
+        webLeadingDocked = webContainer.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: Self.webCardInset)
+        webLeadingFull = webContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.webCardInset)
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            sidebarWidthConstraint,
-            webContainer.topAnchor.constraint(equalTo: content.topAnchor),
-            webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            webContainer.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            revealButton.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.topInset),
-            revealButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 8),
+            sidebar.widthAnchor.constraint(equalToConstant: Self.sidebarWidth),
+            sidebarLeadingConstraint,
+            webContainer.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.webCardTopInset),
+            webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -Self.webCardInset),
+            webLeadingDocked, // active while pinned open (the default)
+            webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.webCardInset),
         ])
+        // Peek: leaving the floating sidebar slides it back (only while collapsed).
+        sidebar.onExited = { [weak self] in self?.closePeek() }
         rebuildTabBar()
+    }
+
+    private func installMouseMonitor() {
+        guard mouseMonitor == nil else { return }
+        window.acceptsMouseMovedEvents = true
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] e in
+            self?.handleMouseMoved(e); return e
+        }
+    }
+
+    /// While collapsed, reveal the sidebar when the cursor reaches the left edge.
+    private func handleMouseMoved(_ e: NSEvent) {
+        guard !sidebarOpen, !peeking, let content = window.contentView else { return }
+        let x = content.convert(e.locationInWindow, from: nil).x
+        if x <= 4 { openPeek() }
+    }
+
+    /// Show/hide the native traffic lights — they belong to the sidebar, so they vanish
+    /// when it's collapsed and reappear on peek/open.
+    private func updateTrafficLights() {
+        let hidden = !(sidebarOpen || peeking)
+        for t: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(t)?.isHidden = hidden
+        }
+    }
+
+    /// Round the corners + cast a shadow only while the sidebar is a floating overlay.
+    private func setSidebarFloating(_ floating: Bool) {
+        sidebar.layer?.cornerRadius = floating ? 12 : 0
+        sidebar.layer?.shadowOpacity = floating ? 0.22 : 0
+    }
+
+    /// Hover-peek: while collapsed, sliding the cursor to the left edge reveals the sidebar
+    /// as an overlay; moving off it slides it back.
+    private func openPeek() {
+        guard !sidebarOpen, !peeking else { return }
+        peeking = true
+        setSidebarFloating(true) // rounded + shadowed while revealed
+        updateTrafficLights()
+        slideSidebar(to: 0)
+    }
+    private func closePeek() {
+        guard peeking else { return }
+        peeking = false
+        slideSidebar(to: -Self.sidebarWidth) { [weak self] in self?.updateTrafficLights() }
+    }
+    private func slideSidebar(to constant: CGFloat, then: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            sidebarLeadingConstraint.animator().constant = constant
+            window.contentView?.layoutSubtreeIfNeeded()
+        }, completionHandler: then)
     }
 
     @objc private func toggleSidebar() {
         sidebarOpen.toggle()
-        tabStack.isHidden = !sidebarOpen
-        revealButton.isHidden = sidebarOpen
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.18
+        peeking = false
+        setSidebarFloating(false) // docked (or collapsed): flush + no shadow
+        webLeadingDocked.isActive = sidebarOpen   // docked: web sits beside the sidebar
+        webLeadingFull.isActive = !sidebarOpen     // collapsed: web fills the width
+        if sidebarOpen { updateTrafficLights() }   // reveal immediately when opening
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             ctx.allowsImplicitAnimation = true
-            sidebarWidthConstraint.animator().constant = sidebarOpen ? Self.sidebarWidth : 0
-        }
+            sidebarLeadingConstraint.animator().constant = sidebarOpen ? 0 : -Self.sidebarWidth
+            window.contentView?.layoutSubtreeIfNeeded()
+        }, completionHandler: { [weak self] in
+            self?.updateTrafficLights() // hide after the collapse finishes
+        })
     }
 
     private func configureButton(_ b: NSButton, symbol: String, action: Selector) {
-        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        b.bezelStyle = .texturedRounded
+        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        b.isBordered = false                 // no bezel — crisp symbol on the tinted bar
+        b.contentTintColor = .labelColor      // high-contrast (adapts light/dark), not accent blue
         b.target = self
         b.action = action
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        b.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 26).isActive = true
     }
 
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            guard let self, e.modifierFlags.contains(.command) else { return e }
+            guard let self else { return e }
+            let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            // Control+Number → switch to workspace N (Arc-style).
+            if flags == .control, let ch = e.charactersIgnoringModifiers, let n = Int(ch), n >= 1 {
+                if n <= self.workspaces.count { self.switchWorkspace(to: self.workspaces[n - 1].id) }
+                return nil
+            }
+            guard flags.contains(.command) else { return e }
             switch e.charactersIgnoringModifiers {
             case "t": self.newTab(); return nil
             case "w": self.closeActiveTab(); return nil

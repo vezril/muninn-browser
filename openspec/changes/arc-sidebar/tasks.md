@@ -14,10 +14,15 @@
 - [x] 2.1 `Folder` (name, colour, collapsed) grouping pinned tabs; collapsible/renamable/colourable rows; move pins in/out. Persisted. Coloured header rows.
 - [x] 2.2 Drag & drop: reorder tabs within a section; drag tabs between sections (in/out of favourites, pins, folders); reorder folders; drop onto a folder header to add. Insertion-line indicator. "Add to Folder" in the context menu for any tab.
 
-## 3. Workspaces (later)
+## 3. Workspaces
 
-- [ ] 3.1 `Workspace` (name, colour) owning its favourites + pinned (+ regular); a switcher in the sidebar; switching swaps the visible sets. Persisted; remembers the active workspace.
+- [x] 3.1 `Workspace` (name, emoji icon, background colour) owning its favourites + pinned + folders (+ regular); a bottom switcher in the sidebar; switching swaps the visible sets with a crossfade. Persisted; remembers the active workspace. Control+Number shortcuts; hover shows name; visual emoji picker; live background-colour picker that tints the window.
 
-## 4. Ship
+## 4. Sidebar chrome polish
 
-- [ ] 4.1 Full suite green; ship PR-gated; update `CLAUDE.md`.
+- [x] 4.1 Full-size content under a transparent title bar (tint extends behind the traffic lights; title hidden); nav cluster beside the traffic lights; floating rounded web card with shadow.
+- [x] 4.2 Arc-style collapse: sidebar (with traffic lights + nav) slides off; hover the left edge to peek it as a floating, rounded, shadowed overlay; slides back on exit. Toggle lives inside the sidebar only.
+
+## 5. Ship
+
+- [x] 5.1 Full suite green; ship PR-gated; update `CLAUDE.md`.
