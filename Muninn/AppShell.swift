@@ -16,6 +16,7 @@ final class AppShell: NSObject {
     private var tabs: [BrowserTab] = []
     private var activeIndex = 0
     private var nextTabId = 0
+    private let store = SidebarStore()
     private var activeTab: BrowserTab { tabs[activeIndex] }
     private var activeWebView: WKWebView { activeTab.webView }
 
@@ -50,8 +51,16 @@ final class AppShell: NSObject {
             backing: .buffered, defer: false)
         super.init()
 
-        // First tab.
+        // First tab (regular), then restore saved favourites/pinned (lazy).
         tabs.append(makeTab())
+        for s in store.load() {
+            guard let url = URL(string: s.url) else { continue }
+            let tab = makeTab()
+            tab.kind = s.kind
+            tab.pendingURL = url
+            tab.setInitialTitle(s.title)
+            tabs.append(tab)
+        }
 
         // The auth-fork is background-driven: background.js opens the fork URL via
         // tabs.create/windows.create. Route those to the active tab, and — the fork-init
@@ -162,8 +171,41 @@ final class AppShell: NSObject {
     func selectTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
         activeIndex = index
+        activeTab.ensureLoaded() // lazily load a restored favourite/pinned tab
         showActiveWebView()
         rebuildTabBar()
+    }
+
+    /// Persist favourites + pinned tabs (regular are session-only).
+    private func persist() {
+        store.save(tabs.filter { $0.kind != .regular }.compactMap { $0.saved() })
+    }
+
+    private func setKind(_ index: Int, _ kind: TabKind) {
+        guard tabs.indices.contains(index) else { return }
+        tabs[index].kind = kind
+        rebuildTabBar()
+        persist()
+    }
+    @objc private func pinTab(_ s: NSMenuItem) { setKind(s.tag, .pinned) }
+    @objc private func favouriteTab(_ s: NSMenuItem) { setKind(s.tag, .favourite) }
+    @objc private func unclassifyTab(_ s: NSMenuItem) { setKind(s.tag, .regular) }
+    @objc private func closeTabMenu(_ s: NSMenuItem) { closeTab(s.tag) }
+
+    /// Right-click menu for a tab at `index` (favourite/pin/close).
+    private func tabContextMenu(_ index: Int) -> NSMenu {
+        let menu = NSMenu()
+        let kind = tabs[index].kind
+        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+            let m = NSMenuItem(title: title, action: action, keyEquivalent: ""); m.target = self; m.tag = index; return m
+        }
+        if kind == .favourite { menu.addItem(item("Remove from Favourites", #selector(unclassifyTab(_:)))) }
+        else { menu.addItem(item("Add to Favourites", #selector(favouriteTab(_:)))) }
+        if kind == .pinned { menu.addItem(item("Unpin Tab", #selector(unclassifyTab(_:)))) }
+        else if kind != .favourite { menu.addItem(item("Pin Tab", #selector(pinTab(_:)))) }
+        menu.addItem(.separator())
+        menu.addItem(item("Close Tab", #selector(closeTabMenu(_:))))
+        return menu
     }
 
     @objc func closeActiveTab() { closeTab(activeIndex) }
@@ -176,6 +218,7 @@ final class AppShell: NSObject {
         activeIndex = min(activeIndex, tabs.count - 1)
         showActiveWebView()
         rebuildTabBar()
+        persist()
     }
 
     private func showActiveWebView() {
@@ -201,10 +244,18 @@ final class AppShell: NSObject {
 
     private func rebuildTabBar() {
         tabStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for (i, tab) in tabs.enumerated() {
-            tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
-        }
-        // Full-width "New Tab" row at the bottom of the list.
+        let favs = tabs.enumerated().filter { $0.element.kind == .favourite }
+        let pins = tabs.enumerated().filter { $0.element.kind == .pinned }
+        let regs = tabs.enumerated().filter { $0.element.kind == .regular }
+
+        if !favs.isEmpty { tabStack.addArrangedSubview(favouritesRow(favs)) }
+        for (i, tab) in pins { tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex)) }
+        if !favs.isEmpty || !pins.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
+        for (i, tab) in regs { tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex)) }
+        tabStack.addArrangedSubview(newTabRow())
+    }
+
+    private func newTabRow() -> NSView {
         let plus = NSButton(title: " New Tab",
                             image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")!,
                             target: self, action: #selector(newTab))
@@ -216,7 +267,61 @@ final class AppShell: NSObject {
         plus.translatesAutoresizingMaskIntoConstraints = false
         plus.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
         plus.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        tabStack.addArrangedSubview(plus)
+        return plus
+    }
+
+    private func separatorLine() -> NSView {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        return box
+    }
+
+    /// Favourites as larger avatar icons, wrapped into rows.
+    private func favouritesRow(_ favs: [(offset: Int, element: BrowserTab)]) -> NSView {
+        let perRow = 5
+        let column = NSStackView()
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 6
+        column.translatesAutoresizingMaskIntoConstraints = false
+        for chunk in stride(from: 0, to: favs.count, by: perRow).map({ Array(favs[$0..<min($0 + perRow, favs.count)]) }) {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.spacing = 6
+            for (i, tab) in chunk { row.addArrangedSubview(makeFavouriteIcon(tab, index: i)) }
+            column.addArrangedSubview(row)
+        }
+        return column
+    }
+
+    private func makeFavouriteIcon(_ tab: BrowserTab, index: Int) -> NSView {
+        let icon = TabChipView()
+        icon.index = index
+        icon.onSelect = { [weak self] in self?.selectTab(index) }
+        icon.menu = tabContextMenu(index)
+        icon.wantsLayer = true
+        icon.layer?.cornerRadius = 9
+        icon.layer?.backgroundColor = tab.avatarColor.cgColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        if index == activeIndex {
+            icon.layer?.borderWidth = 2
+            icon.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        }
+        let letter = NSTextField(labelWithString: tab.avatarLetter)
+        letter.font = .systemFont(ofSize: 16, weight: .semibold)
+        letter.textColor = .white
+        letter.translatesAutoresizingMaskIntoConstraints = false
+        icon.addSubview(letter)
+        NSLayoutConstraint.activate([
+            letter.centerXAnchor.constraint(equalTo: icon.centerXAnchor),
+            letter.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
+        ])
+        icon.toolTip = tab.title
+        return icon
     }
 
     /// One tab row: title (left) + `×` (right) INSIDE a single full-width, clickable pill.
@@ -224,6 +329,7 @@ final class AppShell: NSObject {
         let chip = TabChipView()
         chip.index = index
         chip.onSelect = { [weak self] in self?.selectTab(index) }
+        chip.menu = tabContextMenu(index) // right-click: pin / favourite / close
         chip.wantsLayer = true
         chip.layer?.cornerRadius = 7
         chip.layer?.backgroundColor = active
