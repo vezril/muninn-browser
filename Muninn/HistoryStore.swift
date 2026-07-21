@@ -26,6 +26,12 @@ final class HistoryStore {
         }
     }
 
+    /// Wipe this profile's history.
+    func clear() {
+        entries = []
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     func record(url: URL, title: String) {
         guard url.scheme?.hasPrefix("http") == true else { return }
         let s = url.absoluteString

@@ -20,6 +20,7 @@ final class CommandPalette: NSView {
     /// Data the host refreshes each time the palette opens.
     var openTabs: [(id: Int, title: String, url: URL?)] = []
     var history: [HistoryEntry] = []
+    var searchEngineName = "DuckDuckGo"
 
     private let panel = NSView()
     private let field = NSTextField()
@@ -132,7 +133,7 @@ final class CommandPalette: NSView {
             if let url = Self.asURL(q) {
                 out.append(Item(kind: .url(url), title: url.absoluteString, detail: "Open", trailing: nil, symbol: "globe"))
             } else {
-                out.append(Item(kind: .search(q), title: "Search DuckDuckGo for “\(q)”", detail: nil, trailing: nil, symbol: "magnifyingglass"))
+                out.append(Item(kind: .search(q), title: "Search \(searchEngineName) for “\(q)”", detail: nil, trailing: nil, symbol: "magnifyingglass"))
             }
         }
         let ql = q.lowercased()

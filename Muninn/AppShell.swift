@@ -63,6 +63,7 @@ final class AppShell: NSObject {
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
+    private let settingsButton = NSButton()
     private let sidebar = HoverView()
     private let tabStack = NSStackView()
     /// Slide offset of the sidebar (0 = shown, -sidebarWidth = tucked off-screen left).
@@ -422,8 +423,11 @@ final class AppShell: NSObject {
         let hosts = Array(currentHistory.rankedHosts().prefix(60))
         let json = (try? JSONSerialization.data(withJSONObject: hosts))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        let html = Self.landingHTML.replacingOccurrences(of: "__MUNINN_HOSTS__", with: json)
-        tab.webView.loadHTMLString(html, baseURL: URL(string: "https://duckduckgo.com/"))
+        let engine = SearchEngine.current
+        let html = Self.landingHTML
+            .replacingOccurrences(of: "__MUNINN_HOSTS__", with: json)
+            .replacingOccurrences(of: "__MUNINN_SEARCH__", with: engine.searchBase)
+        tab.webView.loadHTMLString(html, baseURL: URL(string: engine.searchBase))
     }
 
     private static let landingHTML = """
@@ -447,7 +451,7 @@ final class AppShell: NSObject {
       }
     </style></head><body>
       <h1>Muninn</h1><div class="sub">Private. Native. Yours.</div>
-      <form action="https://duckduckgo.com/" method="get" autocomplete="off">
+      <form action="__MUNINN_SEARCH__" method="get" autocomplete="off">
         <input name="q" placeholder="Search or enter a URL" autofocus>
       </form>
       <script>
@@ -693,6 +697,69 @@ final class AppShell: NSObject {
 
     private func workspaceIndex(_ id: UUID) -> Int? { workspaces.firstIndex { $0.id == id } }
     private func profileIndex(_ id: UUID) -> Int? { profiles.firstIndex { $0.id == id } }
+
+    // MARK: - settings
+
+    @objc private func showSettingsMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+
+        let engineItem = NSMenuItem(title: "Search Engine", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for e in SearchEngine.allCases {
+            let m = NSMenuItem(title: e.displayName, action: #selector(setSearchEngine(_:)), keyEquivalent: "")
+            m.target = self; m.representedObject = e.rawValue
+            if e == SearchEngine.current { m.state = .on }
+            sub.addItem(m)
+        }
+        engineItem.submenu = sub
+        menu.addItem(engineItem)
+
+        menu.addItem(.separator())
+        let def = NSMenuItem(title: "Set as Default Browser…", action: #selector(makeDefaultBrowser), keyEquivalent: "")
+        def.target = self; menu.addItem(def)
+        let clear = NSMenuItem(title: "Clear This Profile’s Data…", action: #selector(clearProfileData), keyEquivalent: "")
+        clear.target = self; menu.addItem(clear)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc private func setSearchEngine(_ s: NSMenuItem) {
+        guard let e = (s.representedObject as? String).flatMap(SearchEngine.init(rawValue:)) else { return }
+        SearchEngine.current = e
+    }
+
+    @objc private func makeDefaultBrowser() {
+        let ws = NSWorkspace.shared
+        let bundleURL = Bundle.main.bundleURL
+        ws.setDefaultApplication(at: bundleURL, toOpenURLsWithScheme: "https") { _ in }
+        ws.setDefaultApplication(at: bundleURL, toOpenURLsWithScheme: "http") { error in
+            Task { @MainActor in
+                let alert = NSAlert()
+                if let error {
+                    alert.messageText = "Couldn't set Muninn as the default browser"
+                    alert.informativeText = "\(error.localizedDescription)\n\nYou can set it in System Settings › Desktop & Dock › Default web browser."
+                } else {
+                    alert.messageText = "Muninn is now your default browser"
+                    alert.informativeText = "Links from other apps will open in a Quick Look window."
+                }
+                alert.runModal()
+            }
+        }
+    }
+
+    @objc private func clearProfileData() {
+        let profileName = profiles.first { $0.id == currentProfileId }?.name ?? "current"
+        let alert = NSAlert()
+        alert.messageText = "Clear the \(profileName) profile’s data?"
+        alert.informativeText = "Removes history, cookies, logins, and cached site data for this profile only. Other profiles are unaffected."
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        currentHistory.clear()
+        dataStore(forProfile: currentProfileId).removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                                                           modifiedSince: .distantPast) { }
+        loadLanding(activeTab) // refresh the new-tab suggestions
+    }
 
     // MARK: - profiles (separate cookie/login jars)
 
@@ -1352,13 +1419,14 @@ final class AppShell: NSObject {
         let p = CommandPalette()
         p.openTabs = tabs.filter { $0.workspaceId == activeWorkspaceId }.map { ($0.id, $0.title, $0.currentURL) }
         p.history = currentHistory.entries
+        p.searchEngineName = SearchEngine.current.displayName
         p.onClose = { [weak self] in self?.closeCommandPalette() }
         p.onExecute = { [weak self] item in
             guard let self else { return }
             switch item.kind {
             case .tab(let id): if let i = self.tabIndex(id: id) { self.selectTab(i) }
             case .url(let url): self.openInNewTab(url)
-            case .search(let q): self.openInNewTab(Self.duckDuckGo(q))
+            case .search(let q): self.openInNewTab(SearchEngine.current.url(q))
             }
             self.closeCommandPalette()
         }
@@ -1370,12 +1438,6 @@ final class AppShell: NSObject {
         palette?.removeFromSuperview()
         palette = nil
         window.makeFirstResponder(activeWebView)
-    }
-
-    private static func duckDuckGo(_ query: String) -> URL {
-        var c = URLComponents(string: "https://duckduckgo.com/")!
-        c.queryItems = [URLQueryItem(name: "q", value: query)]
-        return c.url ?? URL(string: "https://duckduckgo.com/")!
     }
 
     /// Render whatever the active tab entails — its split group, or itself alone.
@@ -1986,8 +2048,19 @@ final class AppShell: NSObject {
         workspaceHoverLabel.isHidden = true
         workspaceHoverLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Settings gear, right of the URL bar.
+        settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+        settingsButton.isBordered = false
+        settingsButton.contentTintColor = .secondaryLabelColor
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettingsMenu(_:))
+        settingsButton.toolTip = "Settings"
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+
         sidebar.addSubview(navRow)
         sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under nav
+        sidebar.addSubview(settingsButton)
         sidebar.addSubview(workspaceBar)
         sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
@@ -1996,7 +2069,10 @@ final class AppShell: NSObject {
             navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 88), // clear of the traffic lights
             addressField.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 10),
             addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            addressField.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+            addressField.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -6),
+            settingsButton.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: Self.sidebarWidth - 8),
+            settingsButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            settingsButton.widthAnchor.constraint(equalToConstant: 22),
             tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
@@ -2176,11 +2252,15 @@ final class AppShell: NSObject {
     // MARK: - actions (active tab)
 
     private func navigate(to string: String) {
-        var s = string.trimmingCharacters(in: .whitespaces)
-        if s.isEmpty { return }
-        if !s.contains("://") { s = "https://" + s }
-        guard let url = URL(string: s) else { return }
-        activeTab.load(url)
+        let s = string.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return }
+        // URL-like → open it; otherwise search with the configured engine.
+        let looksURL = !s.contains(" ") && (s.contains("://") || (s.contains(".") && !s.hasSuffix(".")))
+        if looksURL {
+            let full = s.contains("://") ? s : "https://" + s
+            if let url = URL(string: full) { activeTab.load(url); return }
+        }
+        activeTab.load(SearchEngine.current.url(s))
     }
 
     @objc private func addressSubmitted() { navigate(to: addressField.stringValue) }
