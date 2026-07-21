@@ -6,9 +6,23 @@ struct Profile: Codable, Identifiable {
     var id: UUID
     var name: String
     var colorIndex: Int
+    // Per-profile preferences (nil → the default).
+    var searchEngineRaw: String?
+    var autoArchiveRaw: String?
+    var searchSuggestions: Bool?   // show address-bar/new-tab suggestions (default true)
+    var downloadPath: String?      // absolute folder path (nil → ~/Downloads)
 
     init(id: UUID = UUID(), name: String, colorIndex: Int = 1) {
         self.id = id; self.name = name; self.colorIndex = colorIndex
+    }
+
+    var searchEngine: SearchEngine { SearchEngine(rawValue: searchEngineRaw ?? "") ?? .duckduckgo }
+    var autoArchive: AutoArchive { AutoArchive(rawValue: autoArchiveRaw ?? "") ?? .d1 }
+    var suggestionsEnabled: Bool { searchSuggestions ?? true }
+    var downloadFolder: URL {
+        if let p = downloadPath { return URL(fileURLWithPath: p) }
+        return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
     }
 }
 

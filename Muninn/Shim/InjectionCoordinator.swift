@@ -31,6 +31,8 @@ final class InjectionCoordinator: NSObject {
     var onCreateWebView: ((WKNavigationAction) -> Void)?
     /// Fired when this page starts/stops playing media (for the Mini Player).
     var onMediaState: ((Bool) -> Void)?
+    /// Destination folder for downloads (the tab's profile download folder).
+    var downloadFolder: (() -> URL)?
 
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
@@ -198,6 +200,18 @@ extension InjectionCoordinator: WKNavigationDelegate {
         decisionHandler(onNavigationAction?(navigationAction) ?? .allow)
     }
 
+    // Downloads — non-displayable responses (attachments, binaries) become downloads.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
+    }
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         broker.frameRegistry.resetSubframes()
     }
@@ -245,6 +259,27 @@ private final class MediaHandler: NSObject, WKScriptMessageHandler {
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
         let playing = (message.body as? [String: Any])?["playing"] as? Bool ?? false
         injector?.onMediaState?(playing)
+    }
+}
+
+extension InjectionCoordinator: WKDownloadDelegate {
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping @MainActor (URL?) -> Void) {
+        let folder = downloadFolder?() ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = suggestedFilename.isEmpty ? "download" : suggestedFilename
+        var dest = folder.appendingPathComponent(name)
+        // Avoid clobbering an existing file: "name.ext", "name-1.ext", …
+        if FileManager.default.fileExists(atPath: dest.path) {
+            let base = dest.deletingPathExtension().lastPathComponent
+            let ext = dest.pathExtension
+            var n = 1
+            repeat {
+                let candidate = ext.isEmpty ? "\(base)-\(n)" : "\(base)-\(n).\(ext)"
+                dest = folder.appendingPathComponent(candidate); n += 1
+            } while FileManager.default.fileExists(atPath: dest.path)
+        }
+        completionHandler(dest)
     }
 }
 

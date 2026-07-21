@@ -218,6 +218,13 @@ final class AppShell: NSObject {
             tab.isPlayingMedia = playing
             if tab.id == self.miniTabId { self.miniPlayer?.setPlaying(playing) }
         }
+        // Downloads land in the tab's profile download folder.
+        tab.injector.downloadFolder = { [weak self, weak tab] in
+            let fallback = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+            guard let self, let wid = tab?.workspaceId else { return fallback }
+            let pid = self.workspaces.first { $0.id == wid }?.profileId ?? self.defaultProfileId
+            return self.profiles.first { $0.id == pid }?.downloadFolder ?? fallback
+        }
         // target="_blank" / window.open: Peek from a pinned tab (cross-site), else a new tab.
         tab.injector.onCreateWebView = { [weak self, weak tab] action in
             guard let self, let tab, let url = action.request.url, url.scheme?.hasPrefix("http") == true else { return }
@@ -426,10 +433,10 @@ final class AppShell: NSObject {
     /// Muninn's new-tab landing page: a search box (DuckDuckGo, or a typed URL) — a
     /// placeholder we can grow into a real start page later.
     private func loadLanding(_ tab: BrowserTab) {
-        let hosts = Array(currentHistory.rankedHosts().prefix(60))
+        let hosts = suggestionsEnabled ? Array(currentHistory.rankedHosts().prefix(60)) : []
         let json = (try? JSONSerialization.data(withJSONObject: hosts))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        let engine = SearchEngine.current
+        let engine = currentSearchEngine
         let html = Self.landingHTML
             .replacingOccurrences(of: "__MUNINN_HOSTS__", with: json)
             .replacingOccurrences(of: "__MUNINN_SEARCH__", with: engine.searchBase)
@@ -521,7 +528,7 @@ final class AppShell: NSObject {
     /// (the active tab, pinned/favourites, split members, and the Mini Player tab are exempt).
     /// Archived tabs stay reopenable via Cmd+Shift+T and history.
     private func archiveStaleTabs() {
-        guard let interval = AutoArchive.current.interval else { return }
+        guard let interval = currentAutoArchive.interval else { return }
         let cutoff = Date().addingTimeInterval(-interval)
         let activeId = tabs.indices.contains(activeIndex) ? tabs[activeIndex].id : -1
         let staleIds = tabs.filter {
@@ -721,17 +728,72 @@ final class AppShell: NSObject {
     private func workspaceIndex(_ id: UUID) -> Int? { workspaces.firstIndex { $0.id == id } }
     private func profileIndex(_ id: UUID) -> Int? { profiles.firstIndex { $0.id == id } }
 
+    // MARK: - settings window data API
+
+    private var settingsController: SettingsWindowController?
+
+    @objc func openSettings() {
+        let firstTime = settingsController == nil
+        if firstTime { settingsController = SettingsWindowController(host: self) }
+        if firstTime { settingsController?.window?.center() }
+        settingsController?.showWindow(nil)
+        settingsController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func settingsProfiles() -> [Profile] { profiles }
+    var settingsDefaultProfileId: UUID { defaultProfileId }
+    func settingsWorkspaceCount(for pid: UUID) -> Int {
+        workspaces.filter { ($0.profileId ?? defaultProfileId) == pid }.count
+    }
+    func settingsAddProfile() -> Profile {
+        let p = Profile(name: "New Profile", colorIndex: profiles.count % Folder.palette.count)
+        profiles.append(p); persist(); return p
+    }
+    func settingsRenameProfile(_ id: UUID, to name: String) {
+        guard let i = profileIndex(id), !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        profiles[i].name = name; rebuildWorkspaceBar(); persist()
+    }
+    /// Remove a profile (not the default): move its workspaces to the default profile, re-create
+    /// their tabs, and wipe its history + website data. Returns false if it can't be removed.
+    @discardableResult
+    func settingsRemoveProfile(_ id: UUID) -> Bool {
+        guard profiles.count > 1, id != defaultProfileId, let i = profileIndex(id) else { return false }
+        let moved = workspaces.enumerated().filter { ($0.element.profileId ?? defaultProfileId) == id }.map { $0.offset }
+        for wi in moved { workspaces[wi].profileId = defaultProfileId }
+        profiles.remove(at: i)
+        for wi in moved { reprofileWorkspace(workspaces[wi].id) }
+        history(forProfile: id).clear(); historyStores[id] = nil
+        dataStores[id] = nil
+        WKWebsiteDataStore.remove(forIdentifier: id) { _ in }
+        rebuildWorkspaceBar(); rebuildTabBar(); persist()
+        return true
+    }
+    func settingsUpdateProfile(_ id: UUID, _ mutate: (inout Profile) -> Void) {
+        guard let i = profileIndex(id) else { return }
+        mutate(&profiles[i]); persist()
+        if id == currentProfileId { archiveStaleTabs() }
+    }
+    var settingsWarnBeforeQuitting: Bool {
+        get { AppSettings.warnBeforeQuitting }
+        set { AppSettings.warnBeforeQuitting = newValue }
+    }
+
     // MARK: - settings
 
     @objc private func showSettingsMenu(_ sender: NSButton) {
         let menu = NSMenu()
+
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self; menu.addItem(settings)
+        menu.addItem(.separator())
 
         let engineItem = NSMenuItem(title: "Search Engine", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         for e in SearchEngine.allCases {
             let m = NSMenuItem(title: e.displayName, action: #selector(setSearchEngine(_:)), keyEquivalent: "")
             m.target = self; m.representedObject = e.rawValue
-            if e == SearchEngine.current { m.state = .on }
+            if e == currentSearchEngine { m.state = .on }
             sub.addItem(m)
         }
         engineItem.submenu = sub
@@ -742,7 +804,7 @@ final class AppShell: NSObject {
         for a in AutoArchive.allCases {
             let m = NSMenuItem(title: a.displayName, action: #selector(setAutoArchive(_:)), keyEquivalent: "")
             m.target = self; m.representedObject = a.rawValue
-            if a == AutoArchive.current { m.state = .on }
+            if a == currentAutoArchive { m.state = .on }
             asub.addItem(m)
         }
         archiveItem.submenu = asub
@@ -758,13 +820,15 @@ final class AppShell: NSObject {
     }
 
     @objc private func setSearchEngine(_ s: NSMenuItem) {
-        guard let e = (s.representedObject as? String).flatMap(SearchEngine.init(rawValue:)) else { return }
-        SearchEngine.current = e
+        guard let e = (s.representedObject as? String).flatMap(SearchEngine.init(rawValue:)),
+              let i = profileIndex(currentProfileId) else { return }
+        profiles[i].searchEngineRaw = e.rawValue; persist()
     }
 
     @objc private func setAutoArchive(_ s: NSMenuItem) {
-        guard let a = (s.representedObject as? String).flatMap(AutoArchive.init(rawValue:)) else { return }
-        AutoArchive.current = a
+        guard let a = (s.representedObject as? String).flatMap(AutoArchive.init(rawValue:)),
+              let i = profileIndex(currentProfileId) else { return }
+        profiles[i].autoArchiveRaw = a.rawValue; persist()
         archiveStaleTabs()
     }
 
@@ -820,6 +884,10 @@ final class AppShell: NSObject {
     private var currentProfileId: UUID {
         workspaces.first { $0.id == activeWorkspaceId }?.profileId ?? defaultProfileId
     }
+    private var currentProfile: Profile? { profiles.first { $0.id == currentProfileId } }
+    private var currentSearchEngine: SearchEngine { currentProfile?.searchEngine ?? .duckduckgo }
+    private var currentAutoArchive: AutoArchive { currentProfile?.autoArchive ?? .d1 }
+    private var suggestionsEnabled: Bool { currentProfile?.suggestionsEnabled ?? true }
     /// Per-profile history store (the default profile keeps `history.json`).
     private func history(forProfile id: UUID) -> HistoryStore {
         if let h = historyStores[id] { return h }
@@ -1458,15 +1526,15 @@ final class AppShell: NSObject {
         guard let content = window.contentView else { return }
         let p = CommandPalette()
         p.openTabs = tabs.filter { $0.workspaceId == activeWorkspaceId }.map { ($0.id, $0.title, $0.currentURL) }
-        p.history = currentHistory.entries
-        p.searchEngineName = SearchEngine.current.displayName
+        p.history = suggestionsEnabled ? currentHistory.entries : []
+        p.searchEngineName = currentSearchEngine.displayName
         p.onClose = { [weak self] in self?.closeCommandPalette() }
         p.onExecute = { [weak self] item in
             guard let self else { return }
             switch item.kind {
             case .tab(let id): if let i = self.tabIndex(id: id) { self.selectTab(i) }
             case .url(let url): self.openInNewTab(url)
-            case .search(let q): self.openInNewTab(SearchEngine.current.url(q))
+            case .search(let q): self.openInNewTab(currentSearchEngine.url(q))
             }
             self.closeCommandPalette()
         }
@@ -2298,29 +2366,35 @@ final class AppShell: NSObject {
             // Look window has its own key handling.
             guard self.window.isKeyWindow else { return e }
             let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            // Control+Number → switch to workspace N (Arc-style).
+            // Control+Number → switch to workspace N (Arc-style; fixed, not remappable).
             if flags == .control, let ch = e.charactersIgnoringModifiers, let n = Int(ch), n >= 1 {
                 if n <= self.workspaces.count { self.switchWorkspace(to: self.workspaces[n - 1].id) }
                 return nil
             }
-            guard flags.contains(.command) else { return e }
+            // Remappable shortcuts (Settings → Shortcuts).
+            let masked = flags.intersection(Shortcut.mask).rawValue
             let key = (e.charactersIgnoringModifiers ?? "").lowercased()
-            let shift = flags.contains(.shift), opt = flags.contains(.option)
-            // Shift/Option combos first (more specific).
-            if shift && opt && key == "c" { self.copyActiveMarkdown(); return nil }
-            if shift && key == "c" { self.copyActiveURL(); return nil }
-            if shift && key == "t" { self.reopenLastClosed(); return nil }
-            if shift && key == "k" { self.clearUnpinnedTabs(); return nil }
-            guard !shift && !opt else { return e }
-            switch key {
-            case "n": self.openCommandPalette(); return nil
-            case "t": self.newTab(); return nil
-            case "w": self.closeActiveTab(); return nil
-            case "d": self.togglePinActive(); return nil
-            case "l": self.window.makeFirstResponder(self.addressField); return nil
-            case "r": self.reload(); return nil
-            default: return e
+            if let action = ShortcutStore.action(key: key, modifiers: masked) {
+                self.perform(action); return nil
             }
+            return e
+        }
+    }
+
+    private func perform(_ action: ShortcutAction) {
+        switch action {
+        case .commandBar:    openCommandPalette()
+        case .newTab:        newTab()
+        case .quickLook:     openQuickLook(nil)
+        case .closeTab:      closeActiveTab()
+        case .reopenClosed:  reopenLastClosed()
+        case .togglePin:     togglePinActive()
+        case .focusAddress:  window.makeFirstResponder(addressField)
+        case .reload:        reload()
+        case .copyURL:       copyActiveURL()
+        case .copyMarkdown:  copyActiveMarkdown()
+        case .clearUnpinned: clearUnpinnedTabs()
+        case .settings:      openSettings()
         }
     }
 
@@ -2335,7 +2409,7 @@ final class AppShell: NSObject {
             let full = s.contains("://") ? s : "https://" + s
             if let url = URL(string: full) { activeTab.load(url); return }
         }
-        activeTab.load(SearchEngine.current.url(s))
+        activeTab.load(currentSearchEngine.url(s))
     }
 
     @objc private func addressSubmitted() { navigate(to: addressField.stringValue) }
@@ -2381,7 +2455,7 @@ extension AppShell: NSTextFieldDelegate {
     /// Inline autocomplete: as you type in the address bar, complete to the best history host
     /// (e.g. "you" → "youtube.com") with the suffix selected. Tab / → accepts it.
     func controlTextDidChange(_ obj: Notification) {
-        guard (obj.object as? NSTextField) === addressField else { return }
+        guard (obj.object as? NSTextField) === addressField, suggestionsEnabled else { return }
         if skipAddressComplete { skipAddressComplete = false; return }
         guard let editor = addressField.currentEditor() else { return }
         let text = addressField.stringValue

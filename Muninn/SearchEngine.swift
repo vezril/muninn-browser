@@ -68,3 +68,11 @@ enum AutoArchive: String, CaseIterable {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
     }
 }
+
+/// App-wide (non-profile) preferences.
+enum AppSettings {
+    static var warnBeforeQuitting: Bool {
+        get { UserDefaults.standard.object(forKey: "muninn.warnBeforeQuitting") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "muninn.warnBeforeQuitting") }
+    }
+}

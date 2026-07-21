@@ -39,6 +39,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { pendingURLs.append(contentsOf: web) }
     }
 
+    /// Warn-before-quitting (General setting).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard AppSettings.warnBeforeQuitting else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Quit Muninn?"
+        alert.informativeText = "Your open tabs in this session will be closed."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
+    @objc private func openSettings() { shell?.openSettings() }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
@@ -75,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         ).target = self
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Set as Default Browser…", action: #selector(setAsDefaultBrowser), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(
@@ -88,9 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // File menu — Quick Look (Little Muninn).
         let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
-        let ql = fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "n")
-        ql.keyEquivalentModifierMask = [.command, .option]
-        ql.target = self
+        // (no key equivalent — the remappable shortcut is handled by AppShell's key monitor)
+        fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "").target = self
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
