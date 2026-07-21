@@ -8,6 +8,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Developer Mode's Web Inspector must open DETACHED — docked, WebKit reparents it into
+        // our clipping web-card superview and it renders blank/flickering. Pre-seeding this
+        // WebKit inspector-page default makes even the first open detached (no docked flash).
+        UserDefaults.standard.set(false, forKey: "__WebInspectorPageGroupLevel1__.WebKit2InspectorStartsAttached")
+
         // Under XCTest the app is only a host for WKWebView; show no window
         // (keeps `xcodebuild test` headless — ground rule 2).
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {

@@ -645,17 +645,27 @@ final class SettingsWindowController: NSWindowController {
     private func advancedView() -> NSView {
         let v = NSView()
         let title = heading("Advanced")
-        let hint = NSTextField(labelWithString: "Nothing here yet.")
-        hint.font = .systemFont(ofSize: 13); hint.textColor = .secondaryLabelColor
+        let stack = formStack([
+            row("Developer Mode", makeSwitch(host?.settingsDeveloperMode ?? false, #selector(toggleDeveloperMode(_:)))),
+        ])
+        let hint = NSTextField(labelWithString: "Adds right-click View Page Source and Inspect Element (⌥⌘U / ⌥⌘I), and opens the Web Inspector in-app.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 2; hint.preferredMaxLayoutWidth = 620
         for s in [title, hint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        v.addSubview(stack)
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
             title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
-            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 10),
+            stack.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            hint.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 8),
             hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
         ])
         return v
     }
+    @objc private func toggleDeveloperMode(_ s: NSSwitch) { host?.settingsDeveloperMode = (s.state == .on) }
 }
 
 /// A clickable row/chip.

@@ -244,6 +244,8 @@ final class AppShell: NSObject {
             let pid = self.workspaces.first { $0.id == wid }?.profileId ?? self.defaultProfileId
             return self.profiles.first { $0.id == pid }?.downloadFolder ?? fallback
         }
+        // Developer Mode: right-click "View Page Source" → a new tab showing the HTML.
+        tab.injector.onViewSource = { [weak self] wv in self?.viewSource(of: wv) }
         // target="_blank" / window.open: Peek from a pinned tab (cross-site), else a new tab.
         tab.injector.onCreateWebView = { [weak self, weak tab] action in
             guard let self, let tab, let url = action.request.url, url.scheme?.hasPrefix("http") == true else { return }
@@ -1522,6 +1524,47 @@ final class AppShell: NSObject {
         showActiveWebView(); tab.load(url); rebuildTabBar()
     }
 
+    // MARK: - Developer Mode
+
+    /// Open the page's HTML source in a new tab (Developer Mode / ⌥⌘U).
+    func viewSource(of webView: WKWebView) {
+        let sourceURL = webView.url
+        webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
+            let html = (result as? String) ?? ""
+            let escaped = html
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            let title = sourceURL?.host.map { "Source of \($0)" } ?? "Page Source"
+            let page = """
+            <!doctype html><meta charset="utf-8"><title>\(title)</title>
+            <style>body{margin:0;background:#1e1e1e;color:#d4d4d4}
+            pre{padding:16px;white-space:pre-wrap;word-break:break-word;
+            font:12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5}</style>
+            <pre>\(escaped)</pre>
+            """
+            self?.openHTMLInNewTab(page)
+        }
+    }
+
+    private func openHTMLInNewTab(_ html: String) {
+        let tab = makeTab(); tab.workspaceId = activeWorkspaceId
+        tabs.append(tab); activeIndex = tabs.count - 1
+        showActiveWebView(); tab.webView.loadHTMLString(html, baseURL: nil); rebuildTabBar()
+    }
+
+    /// Inspect the active tab's web view (Developer Mode / ⌥⌘I).
+    private func inspectActiveTab() { (activeWebView as? MuninnWebView)?.showInspector() }
+
+    // Developer Mode settings (Settings → Advanced).
+    var settingsDeveloperMode: Bool {
+        get { AppSettings.developerMode }
+        set {
+            AppSettings.developerMode = newValue
+            if #available(macOS 13.3, *) { for t in tabs { t.webView.isInspectable = newValue } }
+        }
+    }
+
     // MARK: - link routing (Air Traffic Control)
 
     /// Open a URL honoring routing rules. If a rule targets a *different* space, switch there
@@ -2537,9 +2580,14 @@ final class AppShell: NSObject {
                 if n <= self.workspaces.count { self.switchWorkspace(to: self.workspaces[n - 1].id) }
                 return nil
             }
-            // Remappable shortcuts (Settings → Shortcuts).
             let masked = flags.intersection(Shortcut.mask).rawValue
             let key = (e.charactersIgnoringModifiers ?? "").lowercased()
+            // Developer Mode: ⌥⌘I inspect, ⌥⌘U view source (fixed; active only in dev mode).
+            if AppSettings.developerMode, flags.intersection(Shortcut.mask) == [.command, .option] {
+                if key == "i" { self.inspectActiveTab(); return nil }
+                if key == "u" { self.viewSource(of: self.activeWebView); return nil }
+            }
+            // Remappable shortcuts (Settings → Shortcuts).
             if let action = ShortcutStore.action(key: key, modifiers: masked) {
                 self.perform(action); return nil
             }

@@ -75,4 +75,10 @@ enum AppSettings {
         get { UserDefaults.standard.object(forKey: "muninn.warnBeforeQuitting") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "muninn.warnBeforeQuitting") }
     }
+    /// Developer Mode: enables the page Web Inspector + right-click View Source / Inspect
+    /// Element and the ⌥⌘U / ⌥⌘I shortcuts. Off by default.
+    static var developerMode: Bool {
+        get { UserDefaults.standard.object(forKey: "muninn.developerMode") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "muninn.developerMode") }
+    }
 }
