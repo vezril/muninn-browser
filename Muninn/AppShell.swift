@@ -41,6 +41,8 @@ final class AppShell: NSObject {
     private var colorPickWorkspace: UUID?
     private var activeTab: BrowserTab { tabs[activeIndex] }
     private var activeWebView: WKWebView { activeTab.webView }
+    /// Tab ids shown in the content area — one (normal) or 2–4 (split view).
+    private var visibleTabIds: [Int] = []
 
     // Chrome
     private let addressField = NSTextField()
@@ -226,8 +228,8 @@ final class AppShell: NSObject {
         guard tabs.indices.contains(index) else { return }
         activeIndex = index
         lastActiveTabId[activeWorkspaceId] = tabs[index].id
-        activeTab.ensureLoaded() // lazily load a restored favourite/pinned tab
-        showActiveWebView()
+        tabs[index].ensureLoaded() // lazily load a restored favourite/pinned tab
+        showVisibleTabs() // shows the tab's split group, or the tab alone
         rebuildTabBar()
     }
 
@@ -244,6 +246,7 @@ final class AppShell: NSObject {
 
     private func setKind(_ index: Int, _ kind: TabKind) {
         guard tabs.indices.contains(index) else { return }
+        if tabs[index].splitGroupId != nil { removeFromSplit(index) } // leaving the regular section
         tabs[index].kind = kind
         if kind != .pinned { tabs[index].folderId = nil } // only pinned tabs live in folders
         rebuildTabBar() // instant — the rest of the list doesn't flash
@@ -308,6 +311,16 @@ final class AppShell: NSObject {
             }
         }
 
+        // Split View (regular tabs).
+        let tab = tabs[index]
+        if tab.splitGroupId != nil {
+            menu.addItem(item("Remove from Split View", #selector(removeFromSplitMenu(_:))))
+        } else if tab.kind == .regular && index != activeIndex && activeTab.kind == .regular
+                    && tab.workspaceId == activeWorkspaceId
+                    && (activeTab.splitGroupId == nil || groupCount(activeTab.splitGroupId!) < 4) {
+            menu.addItem(item("Add to Split View", #selector(addToSplitMenu(_:))))
+        }
+
         menu.addItem(.separator())
         menu.addItem(item("Close Tab", #selector(closeTabMenu(_:))))
         return menu
@@ -351,9 +364,15 @@ final class AppShell: NSObject {
     private func configureDrag(_ chip: TabChipView, tab: BrowserTab, horizontal: Bool = false) {
         chip.dragTab = tab.id
         chip.dropHorizontal = horizontal
-        chip.onDrop = { [weak self, weak tab] payload, before in
+        // Regular (ungrouped) tabs support a center "drop onto" that forms a split.
+        chip.dropSupportsOnto = tab.kind == .regular && tab.folderId == nil
+        chip.onDrop = { [weak self, weak tab] payload, zone in
             guard let self, let tab, case let .tab(draggedId) = payload else { return }
-            self.moveTab(draggedId, kind: tab.kind, folderId: tab.folderId, nextTo: tab.id, before: before)
+            if zone == .onto {
+                self.dropSplit(draggedId, onto: tab.id)
+            } else {
+                self.moveTab(draggedId, kind: tab.kind, folderId: tab.folderId, nextTo: tab.id, before: zone == .before)
+            }
         }
     }
 
@@ -362,13 +381,22 @@ final class AppShell: NSObject {
     private func moveTab(_ id: Int, kind: TabKind, folderId: UUID?, nextTo targetId: Int?, before: Bool) {
         guard id != targetId, let from = tabIndex(id: id) else { return }
         let active = activeTab
-        let tab = tabs.remove(at: from)
+        let tab = tabs[from]
+        // Reordering/moving a split member takes it out of the split.
+        let leftSplit = tab.splitGroupId != nil
+        if let gid = tab.splitGroupId {
+            tab.splitGroupId = nil
+            let remaining = tabs.enumerated().filter { $0.element.splitGroupId == gid }
+            if remaining.count <= 1 { remaining.forEach { tabs[$0.offset].splitGroupId = nil } }
+        }
+        tabs.remove(at: from)
         tab.kind = kind
         tab.folderId = (kind == .pinned) ? folderId : nil
         var insertAt = tabs.count
         if let targetId, let t = tabIndex(id: targetId) { insertAt = before ? t : t + 1 }
         tabs.insert(tab, at: min(max(insertAt, 0), tabs.count))
         if let ai = tabs.firstIndex(where: { $0 === active }) { activeIndex = ai }
+        if leftSplit { showVisibleTabs() }
         rebuildTabBar(); persist()
     }
 
@@ -693,6 +721,11 @@ final class AppShell: NSObject {
 
     func closeTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
+        // A split member "closes" out of the split rather than closing the tab.
+        if tabs[index].splitGroupId != nil {
+            removeFromSplit(index)
+            return
+        }
         // Favourites/pinned aren't removed by close — they unload (free memory) but stay
         // in the sidebar, reloading lazily when picked again.
         if tabs[index].kind != .regular {
@@ -972,22 +1005,146 @@ final class AppShell: NSObject {
         return c.url ?? URL(string: "https://duckduckgo.com/")!
     }
 
-    private func showActiveWebView() {
-        webContainer.subviews.forEach { $0.removeFromSuperview() }
-        let web = activeWebView
-        web.translatesAutoresizingMaskIntoConstraints = false
-        web.wantsLayer = true
-        web.layer?.cornerRadius = 10 // clip page content to the floating card's corners
-        web.layer?.masksToBounds = true
-        webContainer.addSubview(web)
+    /// Render whatever the active tab entails — its split group, or itself alone.
+    private func showActiveWebView() { showVisibleTabs() }
+
+    private func pin(_ v: NSView, to parent: NSView) {
         NSLayoutConstraint.activate([
-            web.topAnchor.constraint(equalTo: webContainer.topAnchor),
-            web.leadingAnchor.constraint(equalTo: webContainer.leadingAnchor),
-            web.trailingAnchor.constraint(equalTo: webContainer.trailingAnchor),
-            web.bottomAnchor.constraint(equalTo: webContainer.bottomAnchor),
+            v.topAnchor.constraint(equalTo: parent.topAnchor),
+            v.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+            v.bottomAnchor.constraint(equalTo: parent.bottomAnchor),
         ])
+    }
+
+    /// Ids of the active tab's split group (2–4), or just the active tab.
+    private func groupMemberIds(_ gid: UUID) -> [Int] { tabs.filter { $0.splitGroupId == gid }.map { $0.id } }
+
+    /// Render the visible tab(s): a single rounded web view, or an NSSplitView of 2–4 panes.
+    private func showVisibleTabs() {
+        webContainer.subviews.forEach { $0.removeFromSuperview() }
+        if let gid = activeTab.splitGroupId { visibleTabIds = groupMemberIds(gid) }
+        else { visibleTabIds = [activeTab.id] }
+
+        if visibleTabIds.count == 1 {
+            let web = activeWebView
+            web.translatesAutoresizingMaskIntoConstraints = false
+            web.wantsLayer = true
+            web.layer?.cornerRadius = 10 // clip page content to the floating card's corners
+            web.layer?.masksToBounds = true
+            webContainer.addSubview(web)
+            pin(web, to: webContainer)
+        } else {
+            let split = NSSplitView()
+            split.isVertical = true // vertical dividers → panes side by side
+            split.dividerStyle = .thin
+            split.translatesAutoresizingMaskIntoConstraints = false
+            for id in visibleTabIds {
+                guard let i = tabIndex(id: id) else { continue }
+                tabs[i].ensureLoaded()
+                split.addSubview(makePane(index: i, active: i == activeIndex))
+            }
+            webContainer.addSubview(split)
+            pin(split, to: webContainer)
+            // Distribute the panes evenly once laid out.
+            DispatchQueue.main.async { [weak split] in
+                guard let split, split.bounds.width > 0 else { return }
+                let n = split.subviews.count
+                for d in 0..<max(n - 1, 0) {
+                    split.setPosition(split.bounds.width * CGFloat(d + 1) / CGFloat(n), ofDividerAt: d)
+                }
+            }
+        }
         updateChrome()
     }
+
+    /// One split-view pane: the tab's web view in a rounded card, accent border when active,
+    /// with a hover × to drop it from the split.
+    private func makePane(index: Int, active: Bool) -> NSView {
+        let pane = NSView()
+        pane.wantsLayer = true
+        pane.layer?.cornerRadius = 10
+        pane.layer?.masksToBounds = true
+        pane.layer?.borderWidth = active ? 2 : 0
+        pane.layer?.borderColor = NSColor.controlAccentColor.cgColor
+
+        let web = tabs[index].webView
+        web.translatesAutoresizingMaskIntoConstraints = false
+        pane.addSubview(web)
+        pin(web, to: pane)
+
+        let xmark = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close pane")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        let close = HoverCloseButton(image: xmark ?? NSImage(), target: self, action: #selector(closePaneButton(_:)))
+        close.tag = tabs[index].id // stable id (index can shift)
+        close.isBordered = false
+        close.contentTintColor = .secondaryLabelColor
+        close.wantsLayer = true
+        close.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.85).cgColor
+        close.layer?.cornerRadius = 9
+        close.translatesAutoresizingMaskIntoConstraints = false
+        pane.addSubview(close)
+        NSLayoutConstraint.activate([
+            close.topAnchor.constraint(equalTo: pane.topAnchor, constant: 8),
+            close.trailingAnchor.constraint(equalTo: pane.trailingAnchor, constant: -8),
+            close.widthAnchor.constraint(equalToConstant: 18),
+            close.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        return pane
+    }
+
+    @objc private func closePaneButton(_ sender: NSButton) {
+        if let i = tabIndex(id: sender.tag) { removeFromSplit(i) }
+    }
+
+    // MARK: - split view
+
+    private func groupCount(_ gid: UUID) -> Int { tabs.filter { $0.splitGroupId == gid }.count }
+
+    /// Split the active tab with `index` (or add `index` to the active tab's existing group).
+    /// Regular tabs only.
+    private func addToSplit(_ index: Int) {
+        guard tabs.indices.contains(index), tabs[index].kind == .regular, activeTab.kind == .regular else { return }
+        if let gid = activeTab.splitGroupId {
+            guard tabs[index].splitGroupId != gid, groupCount(gid) < 4 else { return }
+            tabs[index].splitGroupId = gid
+        } else {
+            guard index != activeIndex else { return }
+            let gid = UUID()
+            activeTab.splitGroupId = gid
+            tabs[index].splitGroupId = gid
+        }
+        activeIndex = index
+        tabs[index].ensureLoaded()
+        showVisibleTabs(); rebuildTabBar()
+    }
+
+    /// Drag one tab onto another → split the two (or add the dragged tab to the target's group).
+    private func dropSplit(_ draggedId: Int, onto targetId: Int) {
+        guard draggedId != targetId, let d = tabIndex(id: draggedId), let t = tabIndex(id: targetId),
+              tabs[d].kind == .regular, tabs[t].kind == .regular else { return }
+        let gid = tabs[t].splitGroupId ?? UUID()
+        guard tabs[d].splitGroupId != gid, groupCount(gid) < 4 else { return }
+        tabs[t].splitGroupId = gid
+        tabs[d].splitGroupId = gid
+        activeIndex = d
+        tabs[d].ensureLoaded(); tabs[t].ensureLoaded()
+        showVisibleTabs(); rebuildTabBar()
+    }
+
+    /// Drop a tab from its split (the tab stays open). If ≤1 member remains, the group dissolves.
+    private func removeFromSplit(_ index: Int) {
+        guard tabs.indices.contains(index), let gid = tabs[index].splitGroupId else { return }
+        let wasActive = index == activeIndex
+        tabs[index].splitGroupId = nil
+        let remaining = tabs.enumerated().filter { $0.element.splitGroupId == gid }
+        if remaining.count <= 1 { remaining.forEach { tabs[$0.offset].splitGroupId = nil } }
+        if wasActive, let firstOther = remaining.first?.offset { activeIndex = firstOther }
+        showVisibleTabs(); rebuildTabBar()
+    }
+
+    @objc private func addToSplitMenu(_ s: NSMenuItem) { addToSplit(s.tag) }
+    @objc private func removeFromSplitMenu(_ s: NSMenuItem) { removeFromSplit(s.tag) }
 
     /// Address field + nav-button state reflect the active tab.
     private func updateChrome() {
@@ -1024,8 +1181,104 @@ final class AppShell: NSObject {
         }
 
         if !favs.isEmpty || !pins.isEmpty || !wsFolders.isEmpty { tabStack.addArrangedSubview(separatorLine()) }
-        for (i, tab) in regs { tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex)) }
+        // Regular tabs — a split group renders once as a combined chip at its first member.
+        var renderedGroups = Set<UUID>()
+        for (i, tab) in regs {
+            if let gid = tab.splitGroupId {
+                if renderedGroups.contains(gid) { continue }
+                renderedGroups.insert(gid)
+                let members = regs.filter { $0.element.splitGroupId == gid }.map { $0.offset }
+                tabStack.addArrangedSubview(makeSplitChip(members))
+            } else {
+                tabStack.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
+            }
+        }
         tabStack.addArrangedSubview(newTabRow())
+    }
+
+    /// A split group as one combined sidebar tab: a bordered row of per-member mini-chips.
+    private func makeSplitChip(_ memberIndices: [Int]) -> NSView {
+        let isActiveGroup = memberIndices.contains(activeIndex)
+        let group = NSView()
+        group.wantsLayer = true
+        group.layer?.cornerRadius = 7
+        group.layer?.borderWidth = 1
+        group.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(isActiveGroup ? 0.7 : 0.3).cgColor
+        group.layer?.backgroundColor = (isActiveGroup ? NSColor.controlAccentColor.withAlphaComponent(0.12) : .clear).cgColor
+        group.translatesAutoresizingMaskIntoConstraints = false
+        group.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        group.heightAnchor.constraint(equalToConstant: 34).isActive = true
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.distribution = .fillEqually
+        row.spacing = 3
+        row.translatesAutoresizingMaskIntoConstraints = false
+        for i in memberIndices { row.addArrangedSubview(makeSplitMember(index: i, active: i == activeIndex)) }
+        group.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 3),
+            row.trailingAnchor.constraint(equalTo: group.trailingAnchor, constant: -3),
+            row.topAnchor.constraint(equalTo: group.topAnchor, constant: 3),
+            row.bottomAnchor.constraint(equalTo: group.bottomAnchor, constant: -3),
+        ])
+        return group
+    }
+
+    /// One member mini-chip inside a combined split chip: favicon + title + × (leaves the split).
+    private func makeSplitMember(index: Int, active: Bool) -> NSView {
+        let tab = tabs[index]
+        let chip = TabChipView()
+        chip.index = index
+        chip.onSelect = { [weak self] in self?.selectTab(index) }
+        chip.menu = tabContextMenu(index)
+        chip.wantsLayer = true
+        chip.layer?.cornerRadius = 5
+        chip.layer?.backgroundColor = (active ? NSColor.controlAccentColor.withAlphaComponent(0.30)
+                                              : NSColor.secondaryLabelColor.withAlphaComponent(0.12)).cgColor
+        chip.translatesAutoresizingMaskIntoConstraints = false
+
+        let fav = NSImageView()
+        fav.imageScaling = .scaleProportionallyDown
+        fav.wantsLayer = true; fav.layer?.cornerRadius = 2; fav.layer?.masksToBounds = true
+        fav.translatesAutoresizingMaskIntoConstraints = false
+        if let icon = tab.favicon { fav.image = icon }
+        else {
+            fav.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .regular))
+            fav.contentTintColor = .tertiaryLabelColor
+        }
+
+        let title = NSTextField(labelWithString: tab.title)
+        title.font = .systemFont(ofSize: 10, weight: active ? .semibold : .regular)
+        title.textColor = active ? .labelColor : .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let close = HoverCloseButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Remove from split")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 7, weight: .semibold)) ?? NSImage(),
+                                     target: self, action: #selector(closePaneButton(_:)))
+        close.tag = tab.id
+        close.isBordered = false
+        close.contentTintColor = .secondaryLabelColor
+        close.translatesAutoresizingMaskIntoConstraints = false
+
+        chip.addSubview(fav); chip.addSubview(title); chip.addSubview(close)
+        NSLayoutConstraint.activate([
+            fav.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 6),
+            fav.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            fav.widthAnchor.constraint(equalToConstant: 13),
+            fav.heightAnchor.constraint(equalToConstant: 13),
+            title.leadingAnchor.constraint(equalTo: fav.trailingAnchor, constant: 5),
+            title.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            close.leadingAnchor.constraint(greaterThanOrEqualTo: title.trailingAnchor, constant: 3),
+            close.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -5),
+            close.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            close.widthAnchor.constraint(equalToConstant: 14),
+            close.heightAnchor.constraint(equalToConstant: 14),
+        ])
+        return chip
     }
 
     /// Wrap an indented chip so it sits inset under a folder header while the row still
@@ -1053,14 +1306,14 @@ final class AppShell: NSObject {
         row.onSelect = { [weak self] in self?.toggleFolder(id: folder.id) }
         row.menu = folderContextMenu(folder.id)
         row.dragFolder = folder.id // drag the header to reorder folders
-        row.onDrop = { [weak self] payload, before in
+        row.onDrop = { [weak self] payload, zone in
             guard let self else { return }
             switch payload {
             case .tab(let id): // drop a tab onto the header → into this folder (at top)
                 self.moveTab(id, kind: .pinned, folderId: folder.id,
                              nextTo: self.firstTabId(kind: .pinned, folderId: folder.id), before: true)
             case .folder(let fid): // drop a folder onto the header → reorder folders
-                self.moveFolder(fid, nextTo: folder.id, before: before)
+                self.moveFolder(fid, nextTo: folder.id, before: zone != .after)
             }
         }
         row.wantsLayer = true
@@ -1115,6 +1368,7 @@ final class AppShell: NSObject {
             guard let self, case let .tab(id) = payload else { return }
             self.moveTab(id, kind: .regular, folderId: nil, nextTo: nil, before: false)
         }
+        row.dropSupportsOnto = false
         row.translatesAutoresizingMaskIntoConstraints = false
         row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
         row.heightAnchor.constraint(equalToConstant: 30).isActive = true
