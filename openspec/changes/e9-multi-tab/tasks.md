@@ -15,5 +15,5 @@
 ## 3. Verify & ship
 
 - [x] 3.1 Full suite green (multi-tab refactor + contextName didn't regress the shim/bus).
-- [ ] 3.2 Live check: launch, open/close/switch tabs, navigate in each, shortcuts work (GUI — warn Calvin per ground rule 2).
+- [x] 3.2 Live check (Calvin: tabs, close × + hover, landing page, shortcuts — approved after iteration): launch, open/close/switch tabs, navigate in each, shortcuts work (GUI — warn Calvin per ground rule 2).
 - [ ] 3.3 Ship PR-gated; update `CLAUDE.md` (shell is now multi-tab).
