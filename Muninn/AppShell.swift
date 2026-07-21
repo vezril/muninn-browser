@@ -184,8 +184,25 @@ final class AppShell: NSObject {
     private func setKind(_ index: Int, _ kind: TabKind) {
         guard tabs.indices.contains(index) else { return }
         tabs[index].kind = kind
-        rebuildTabBar()
+        animatedRebuild()
         persist()
+    }
+
+    /// Rebuild the sidebar with a quick crossfade — makes a tab moving between
+    /// sections (pin/favourite) feel fluid rather than snapping.
+    private func animatedRebuild() {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.10
+            tabStack.animator().alphaValue = 0.0
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            self.rebuildTabBar()
+            self.tabStack.alphaValue = 0.0
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                self.tabStack.animator().alphaValue = 1.0
+            }
+        })
     }
     @objc private func pinTab(_ s: NSMenuItem) { setKind(s.tag, .pinned) }
     @objc private func favouriteTab(_ s: NSMenuItem) { setKind(s.tag, .favourite) }
