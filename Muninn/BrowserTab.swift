@@ -232,6 +232,8 @@ final class BrowserTab {
     /// For pinned/favourite tabs: the site it's anchored to. Cross-site link clicks open a
     /// Peek preview instead of navigating the tab away from here.
     var homeURL: URL?
+    /// Whether this tab is currently playing media (drives the Mini Player).
+    var isPlayingMedia = false
     /// URL a restored favourite/pinned tab should load lazily on first activation.
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).
