@@ -56,9 +56,7 @@ final class AppShell: NSObject {
         buildUI()
         showActiveWebView()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            if !didOpen { self?.navigate(to: "https://account.proton.me") }
-        }
+        loadLanding(activeTab) // default new-tab page (auth-fork paths override in present())
         window.title = "Muninn"
         window.center()
     }
@@ -71,7 +69,8 @@ final class AppShell: NSObject {
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
             else if env["MUNINN_POPUP"] != nil { openPopup() }
-            else { navigate(to: "https://account.proton.me") }
+            else { loadLanding(activeTab) } // plain browser: the landing page
+
         }
         // MUNINN_FRESH: wipe Muninn's OWN default website data (its store — NOT the
         // system browser) so an account login is fresh and actually forks.
@@ -102,9 +101,51 @@ final class AppShell: NSObject {
         activeIndex = tabs.count - 1
         showActiveWebView()
         rebuildTabBar()
-        navigate(to: "https://account.proton.me") // simple default home
+        loadLanding(activeTab)
         window.makeFirstResponder(addressField)
     }
+
+    /// Muninn's new-tab landing page: a search box (DuckDuckGo, or a typed URL) — a
+    /// placeholder we can grow into a real start page later.
+    private func loadLanding(_ tab: BrowserTab) {
+        tab.webView.loadHTMLString(Self.landingHTML, baseURL: URL(string: "https://duckduckgo.com/"))
+    }
+
+    private static let landingHTML = """
+    <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+      :root { color-scheme: light dark; }
+      html,body{margin:0;height:100%}
+      body{display:flex;flex-direction:column;align-items:center;justify-content:center;
+        font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f6f6fb;color:#1a1a2e}
+      h1{font-size:46px;font-weight:650;letter-spacing:-1.5px;margin:0}
+      .sub{color:#6a6a88;margin:6px 0 30px;font-size:14px}
+      form{width:min(600px,82vw)}
+      input{width:100%;box-sizing:border-box;padding:15px 20px;font-size:16px;border-radius:14px;
+        border:1px solid #dcdce8;background:#fff;color:#111;outline:none;
+        box-shadow:0 2px 14px rgba(30,30,60,.06)}
+      input:focus{border-color:#7777f8;box-shadow:0 2px 20px rgba(119,119,248,.18)}
+      @media (prefers-color-scheme: dark){
+        body{background:#16161f;color:#e8e8f2}.sub{color:#8a8aa8}
+        input{background:#22222e;border-color:#33334d;color:#fff;box-shadow:none}
+        input:focus{border-color:#7777f8}
+      }
+    </style></head><body>
+      <h1>Muninn</h1><div class="sub">Private. Native. Yours.</div>
+      <form action="https://duckduckgo.com/" method="get" autocomplete="off">
+        <input name="q" placeholder="Search or enter a URL" autofocus>
+      </form>
+      <script>
+        document.querySelector('form').addEventListener('submit', function (e) {
+          var q = document.querySelector('input').value.trim();
+          if (q && !/\\s/.test(q) && (/^https?:\\/\\//.test(q) || /^[\\w-]+(\\.[\\w-]+)+/.test(q))) {
+            e.preventDefault();
+            location.href = /^https?:\\/\\//.test(q) ? q : 'https://' + q;
+          }
+        });
+      </script>
+    </body></html>
+    """
 
     func selectTab(_ index: Int) {
         guard tabs.indices.contains(index) else { return }
@@ -151,40 +192,66 @@ final class AppShell: NSObject {
         for (i, tab) in tabs.enumerated() {
             tabBar.addArrangedSubview(makeTabChip(tab, index: i, active: i == activeIndex))
         }
-        let plus = NSButton(title: "+", target: self, action: #selector(newTab))
-        plus.bezelStyle = .texturedRounded
-        plus.setButtonType(.momentaryPushIn)
-        plus.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        // New-tab button.
+        let plus = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")!,
+                            target: self, action: #selector(newTab))
+        plus.isBordered = false
+        plus.contentTintColor = .secondaryLabelColor
+        plus.translatesAutoresizingMaskIntoConstraints = false
+        plus.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        plus.heightAnchor.constraint(equalToConstant: 28).isActive = true
         tabBar.addArrangedSubview(plus)
+        // Trailing spacer keeps tabs left-aligned (absorbs remaining width).
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        tabBar.addArrangedSubview(spacer)
     }
 
+    /// One tab chip: title (left) + `×` (right) INSIDE a single rounded, clickable pill.
     private func makeTabChip(_ tab: BrowserTab, index: Int, active: Bool) -> NSView {
-        let titleBtn = NSButton(title: chipTitle(tab), target: self, action: #selector(tabChipClicked(_:)))
-        titleBtn.tag = index
-        titleBtn.bezelStyle = .texturedRounded
-        titleBtn.setButtonType(.pushOnPushOff)
-        titleBtn.state = active ? .on : .off
-        titleBtn.alignment = .left
-        titleBtn.lineBreakMode = .byTruncatingTail
-        titleBtn.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        let chip = TabChipView()
+        chip.index = index
+        chip.wantsLayer = true
+        chip.layer?.cornerRadius = 7
+        chip.layer?.backgroundColor = active
+            ? NSColor.controlAccentColor.withAlphaComponent(0.20).cgColor
+            : NSColor.clear.cgColor
+        chip.translatesAutoresizingMaskIntoConstraints = false
+        chip.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        chip.heightAnchor.constraint(equalToConstant: 30).isActive = true
 
-        let close = NSButton(title: "×", target: self, action: #selector(tabChipClosed(_:)))
+        let title = NSTextField(labelWithString: tab.title)
+        title.font = .systemFont(ofSize: 12, weight: active ? .semibold : .regular)
+        title.textColor = active ? .labelColor : .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")!,
+                             target: self, action: #selector(tabChipClosed(_:)))
         close.tag = index
-        close.bezelStyle = .texturedRounded
-        close.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        close.isBordered = false
+        close.imageScaling = .scaleProportionallyDown
+        close.contentTintColor = .secondaryLabelColor
+        close.translatesAutoresizingMaskIntoConstraints = false
+        close.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        close.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
-        let chip = NSStackView(views: [titleBtn, close])
-        chip.orientation = .horizontal
-        chip.spacing = 2
+        chip.addSubview(title); chip.addSubview(close)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 11),
+            title.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            close.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -7),
+            close.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -6),
+        ])
+        chip.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(tabChipTapped(_:))))
         return chip
     }
 
-    private func chipTitle(_ tab: BrowserTab) -> String {
-        let t = tab.title
-        return t.count > 22 ? String(t.prefix(22)) + "…" : t
+    @objc private func tabChipTapped(_ g: NSClickGestureRecognizer) {
+        if let chip = g.view as? TabChipView { selectTab(chip.index) }
     }
-
-    @objc private func tabChipClicked(_ sender: NSButton) { selectTab(sender.tag) }
     @objc private func tabChipClosed(_ sender: NSButton) { closeTab(sender.tag) }
 
     // MARK: - auth-fork (parked; runs on the active tab)

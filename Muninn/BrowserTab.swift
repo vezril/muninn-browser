@@ -1,6 +1,12 @@
 import AppKit
 import WebKit
 
+/// A tab-bar chip view that remembers which tab index it represents (for the
+/// click-to-select gesture).
+final class TabChipView: NSView {
+    var index: Int = 0
+}
+
 /// One browser tab: an injected `WKWebView` (the Pass content shim rides along, per-tab
 /// broker context) plus its title/url tracking for the tab bar and address field.
 @MainActor
