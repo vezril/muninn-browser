@@ -73,6 +73,26 @@ struct Folder: Codable, Identifiable {
     ]
 }
 
+/// Air Traffic Control: route links from a host to a target workspace (which carries its
+/// profile). Matches the host and its subdomains (`github.com` also matches `gist.github.com`).
+struct RoutingRule: Codable, Identifiable {
+    var id: UUID
+    var host: String
+    var workspaceId: UUID
+
+    init(id: UUID = UUID(), host: String = "", workspaceId: UUID) {
+        self.id = id; self.host = host; self.workspaceId = workspaceId
+    }
+
+    func matches(_ url: URL) -> Bool {
+        guard !host.isEmpty, var h = url.host?.lowercased() else { return false }
+        if h.hasPrefix("www.") { h = String(h.dropFirst(4)) }
+        var p = host.lowercased()
+        if p.hasPrefix("www.") { p = String(p.dropFirst(4)) }
+        return !p.isEmpty && (h == p || h.hasSuffix("." + p))
+    }
+}
+
 /// What the sidebar persists: saved tabs, folder definitions, workspaces, and the active one.
 struct SidebarState: Codable {
     var tabs: [SavedTab] = []
@@ -80,6 +100,7 @@ struct SidebarState: Codable {
     var workspaces: [Workspace] = []
     var activeWorkspace: String?
     var profiles: [Profile] = []
+    var routingRules: [RoutingRule] = []
 }
 
 /// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in

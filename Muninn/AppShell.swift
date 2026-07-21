@@ -46,6 +46,8 @@ final class AppShell: NSObject {
     private var profiles: [Profile] = []
     private var defaultProfileId = UUID()
     private var dataStores: [UUID: WKWebsiteDataStore] = [:]
+    /// Air Traffic Control link-routing rules (host → workspace).
+    private var routingRules: [RoutingRule] = []
     /// Remembers the last-active tab id per workspace (restored on switch).
     private var lastActiveTabId: [UUID: Int] = [:]
     private let workspaceBar = NSStackView()
@@ -115,6 +117,7 @@ final class AppShell: NSObject {
         profiles = saved.profiles.isEmpty ? [Profile(name: "Personal", colorIndex: 1)] : saved.profiles
         defaultProfileId = profiles[0].id
         let profileIds = Set(profiles.map { $0.id })
+        routingRules = saved.routingRules
 
         // Folders — assign any pre-workspaces folder to the default workspace.
         folders = saved.folders.map { var f = $0; if f.workspaceId == nil { f.workspaceId = defaultWs }; return f }
@@ -553,7 +556,8 @@ final class AppShell: NSObject {
                                 folders: folders,
                                 workspaces: workspaces,
                                 activeWorkspace: activeWorkspaceId.uuidString,
-                                profiles: profiles))
+                                profiles: profiles,
+                                routingRules: routingRules))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
@@ -1499,6 +1503,54 @@ final class AppShell: NSObject {
         showActiveWebView(); tab.load(url); rebuildTabBar()
     }
 
+    // MARK: - link routing (Air Traffic Control)
+
+    /// Open a URL honoring routing rules. If a rule targets a *different* space, switch there
+    /// and open a new tab; otherwise load it here (`newTab` picks new-tab vs current-tab).
+    /// Returns true if it re-homed the URL to another space.
+    @discardableResult
+    private func openRouted(_ url: URL, newTab: Bool) -> Bool {
+        if let rule = routingRules.first(where: { $0.matches(url) }),
+           rule.workspaceId != activeWorkspaceId,
+           workspaces.contains(where: { $0.id == rule.workspaceId }) {
+            switchWorkspace(to: rule.workspaceId)
+            openInNewTab(url)
+            return true
+        }
+        if newTab { openInNewTab(url) } else { activeTab.load(url) }
+        return false
+    }
+
+    /// Route an incoming link: if a rule matches its host, open it in that rule's workspace
+    /// (switching to it — which also switches profile). Otherwise open a Quick Look.
+    func route(_ url: URL) {
+        guard url.scheme?.hasPrefix("http") == true else { return }
+        if let rule = routingRules.first(where: { $0.matches(url) }),
+           workspaces.contains(where: { $0.id == rule.workspaceId }) {
+            switchWorkspace(to: rule.workspaceId) // no-op if already active
+            openInNewTab(url)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            openQuickLook(url)
+        }
+    }
+
+    // Routing settings API (used by SettingsWindowController).
+    func settingsRoutingRules() -> [RoutingRule] { routingRules }
+    func settingsWorkspacePicker() -> [(id: UUID, name: String)] { workspaces.map { ($0.id, $0.name) } }
+    func settingsAddRule() {
+        guard let wid = workspaces.first?.id else { return }
+        routingRules.append(RoutingRule(workspaceId: wid)); persist()
+    }
+    func settingsRemoveRule(_ id: UUID) { routingRules.removeAll { $0.id == id }; persist() }
+    func settingsUpdateRule(_ id: UUID, host: String? = nil, workspaceId: UUID? = nil) {
+        guard let i = routingRules.firstIndex(where: { $0.id == id }) else { return }
+        if let host { routingRules[i].host = host.trimmingCharacters(in: .whitespaces) }
+        if let workspaceId { routingRules[i].workspaceId = workspaceId }
+        persist()
+    }
+
     // MARK: - Quick Look (Little Muninn)
 
     /// Open a compact, ephemeral Quick Look window (Cmd+Option+N, or an external link when
@@ -1533,7 +1585,7 @@ final class AppShell: NSObject {
             guard let self else { return }
             switch item.kind {
             case .tab(let id): if let i = self.tabIndex(id: id) { self.selectTab(i) }
-            case .url(let url): self.openInNewTab(url)
+            case .url(let url): self.openRouted(url, newTab: true)
             case .search(let q): self.openInNewTab(currentSearchEngine.url(q))
             }
             self.closeCommandPalette()
@@ -2407,7 +2459,7 @@ final class AppShell: NSObject {
         let looksURL = !s.contains(" ") && (s.contains("://") || (s.contains(".") && !s.hasSuffix(".")))
         if looksURL {
             let full = s.contains("://") ? s : "https://" + s
-            if let url = URL(string: full) { activeTab.load(url); return }
+            if let url = URL(string: full) { openRouted(url, newTab: false); return }
         }
         activeTab.load(currentSearchEngine.url(s))
     }
