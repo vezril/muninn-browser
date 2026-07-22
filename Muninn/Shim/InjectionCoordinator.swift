@@ -125,10 +125,30 @@ final class InjectionCoordinator: NSObject {
                let wa = try? String(contentsOf: root.appendingPathComponent("webauthn.js"), encoding: .utf8) {
                 addUserScript(wa, at: .atDocumentStart, world: .page, allFrames: true)
             }
+            // Preferred website language: override navigator.language(s) so SPAs (e.g. Proton)
+            // render in the chosen language even on a foreign IP/locale. Runs BEFORE fingerprint
+            // defense so its languages-reduction reads the overridden value. Applies to all sites.
+            let langs = AppSettings.websiteLanguageList
+            if !langs.isEmpty,
+               let data = try? JSONSerialization.data(withJSONObject: langs),
+               let json = String(data: data, encoding: .utf8) {
+                let langScript = """
+                (function(){try{var L=\(json);
+                  Object.defineProperty(navigator,'language',{get:function(){return L[0];},configurable:true});
+                  Object.defineProperty(navigator,'languages',{get:function(){return L.slice();},configurable:true});
+                }catch(e){}})();
+                """
+                addUserScript(langScript, at: .atDocumentStart, world: .page, allFrames: true)
+            }
             // Shields: fingerprint defense (farbling) — MAIN world, before page scripts.
             if ShieldsManager.shared.fingerprintProtection {
                 addUserScript(FingerprintDefense.script(sessionToken: ShieldsManager.shared.sessionToken),
                               at: .atDocumentStart, world: .page, allFrames: true)
+            }
+            // Shields: cookie-consent notice blocking — reject/hide banners (privacy-preserving).
+            // The script self-exempts *.proton.me to keep the shim/auth-fork path pristine.
+            if ShieldsManager.shared.blockCookieNotices {
+                addUserScript(CookieConsent.script(), at: .atDocumentStart, world: .page, allFrames: true)
             }
         }
 
