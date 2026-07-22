@@ -2,7 +2,7 @@ import Foundation
 
 /// One message in a chat session.
 struct ChatMessage: Codable {
-    enum Role: String, Codable { case user, assistant }
+    enum Role: String, Codable { case user, assistant, system }
     var role: Role
     var text: String
 }
