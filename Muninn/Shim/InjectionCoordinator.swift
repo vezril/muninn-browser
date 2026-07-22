@@ -150,6 +150,11 @@ final class InjectionCoordinator: NSObject {
             if ShieldsManager.shared.blockCookieNotices {
                 addUserScript(CookieConsent.script(), at: .atDocumentStart, world: .page, allFrames: true)
             }
+            // Shields: cosmetic ad hiding — removes empty ad slots (e.g. the blank AdThrive sticky
+            // footer) left behind after the ad network is blocked. Part of "block ads & trackers".
+            if ShieldsManager.shared.blockAds {
+                addUserScript(AdCosmetics.script(), at: .atDocumentStart, world: .page, allFrames: true)
+            }
         }
 
         // Broker handler registered ONLY for the isolated world — the page MAIN

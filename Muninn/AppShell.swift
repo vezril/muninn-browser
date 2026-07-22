@@ -179,6 +179,7 @@ final class AppShell: NSObject {
             tab.pendingURL = url
             tab.homeURL = url // anchored site for Peek (restored pinned/favourite)
             tab.setInitialTitle(s.title)
+            tab.customTitle = s.customTitle
             tab.setInitialFavicon(base64: s.faviconBase64)
             if let fid = s.folderId.flatMap(UUID.init), folderIds.contains(fid) { tab.folderId = fid }
             tabs.append(tab)
@@ -722,6 +723,10 @@ final class AppShell: NSObject {
         if kind == .pinned { menu.addItem(item("Unpin Tab", #selector(unclassifyTab(_:)))) }
         else if kind != .favourite { menu.addItem(item("Pin Tab", #selector(pinTab(_:)))) }
 
+        // Custom name — override the page title in the sidebar (content untouched).
+        menu.addItem(item("Rename…", #selector(renameTab(_:))))
+        if tabs[index].customTitle != nil { menu.addItem(item("Reset Name", #selector(resetTabName(_:)))) }
+
         // Folders — available for any tab (moving a regular/favourite tab in pins it).
         if kind != .favourite || !folders.isEmpty {
             let move = NSMenuItem(title: "Add to Folder", action: nil, keyEquivalent: "")
@@ -755,6 +760,23 @@ final class AppShell: NSObject {
         menu.addItem(.separator())
         menu.addItem(item("Close Tab", #selector(closeTabMenu(_:))))
         return menu
+    }
+
+    // MARK: - rename tab
+
+    @objc private func renameTab(_ s: NSMenuItem) {
+        guard tabs.indices.contains(s.tag) else { return }
+        let tab = tabs[s.tag]
+        guard let name = promptForText(title: "Rename Tab", message: "Tab name:", initial: tab.displayTitle)
+        else { return }
+        tab.customTitle = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : name
+        rebuildTabBar(); persist()
+    }
+
+    @objc private func resetTabName(_ s: NSMenuItem) {
+        guard tabs.indices.contains(s.tag) else { return }
+        tabs[s.tag].customTitle = nil
+        rebuildTabBar(); persist()
     }
 
     // MARK: - folder actions
@@ -1046,7 +1068,7 @@ final class AppShell: NSObject {
             let fresh = BrowserTab(id: old.id, broker: broker, dataStore: store)
             fresh.kind = old.kind; fresh.folderId = old.folderId; fresh.workspaceId = wid
             fresh.splitGroupId = old.splitGroupId; fresh.homeURL = old.homeURL
-            fresh.setInitialTitle(old.title)
+            fresh.setInitialTitle(old.title); fresh.customTitle = old.customTitle
             fresh.pendingURL = old.currentURL // reload lazily (or on show)
             configureTab(fresh)
             if old.id == miniTabId { stopMiniPlayer() }
@@ -2289,7 +2311,7 @@ final class AppShell: NSObject {
             fav.contentTintColor = .tertiaryLabelColor
         }
 
-        let title = NSTextField(labelWithString: tab.title)
+        let title = NSTextField(labelWithString: tab.displayTitle)
         title.font = .systemFont(ofSize: 10, weight: active ? .semibold : .regular)
         title.textColor = active ? .labelColor : .secondaryLabelColor
         title.lineBreakMode = .byTruncatingTail
@@ -2538,7 +2560,7 @@ final class AppShell: NSObject {
                 letter.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
             ])
         }
-        icon.toolTip = tab.title
+        icon.toolTip = tab.displayTitle
         return icon
     }
 
@@ -2575,7 +2597,7 @@ final class AppShell: NSObject {
             fav.contentTintColor = .tertiaryLabelColor
         }
 
-        let title = NSTextField(labelWithString: tab.title)
+        let title = NSTextField(labelWithString: tab.displayTitle)
         title.font = .systemFont(ofSize: 12, weight: active ? .semibold : .regular)
         title.textColor = active ? .labelColor : .secondaryLabelColor
         title.lineBreakMode = .byTruncatingTail
