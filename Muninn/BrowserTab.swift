@@ -13,6 +13,8 @@ struct SavedTab: Codable {
     var folderId: String?
     /// UUID (string) of the owning workspace (optional for migration).
     var workspaceId: String?
+    /// User-chosen display name overriding the page title, if any.
+    var customTitle: String?
 }
 
 extension NSColor {
@@ -243,6 +245,11 @@ final class BrowserTab {
 
     /// Display title (page title, falling back to host / "New Tab").
     private(set) var title: String = "New Tab"
+    /// A user-chosen name that overrides the page title in the sidebar (content untouched — the
+    /// page title keeps updating `title` underneath). nil = show the page title.
+    var customTitle: String?
+    /// What the sidebar shows: the custom name if set, else the live page title.
+    var displayTitle: String { (customTitle?.isEmpty == false) ? customTitle! : title }
     /// The site's own favicon (fetched from its origin — no third-party service).
     private(set) var favicon: NSImage?
     private var faviconData: Data?
@@ -316,7 +323,9 @@ final class BrowserTab {
     /// it reloads lazily via `ensureLoaded()` the next time it's selected.
     func unload() {
         guard isLoaded else { return }
-        pendingURL = webView.url ?? pendingURL
+        // Pinned/favourite tabs are anchored to their pin (`homeURL`): closing snaps them back to
+        // the original link, not wherever you'd navigated. Regular tabs keep their current spot.
+        pendingURL = homeURL ?? webView.url ?? pendingURL
         isLoaded = false
         faviconForURL = nil
         if let blank = URL(string: "about:blank") { injector.load(blank) }
@@ -338,11 +347,15 @@ final class BrowserTab {
     }
 
     func saved() -> SavedTab? {
-        guard let u = currentURL?.absoluteString, !u.isEmpty, !u.hasPrefix("about:") else { return nil }
+        // Anchored (pinned/favourite) tabs persist their pin (`homeURL`) so they reopen at the
+        // original link after a relaunch too, not wherever they were last navigated.
+        let anchor = (kind != .regular) ? homeURL?.absoluteString : nil
+        guard let u = anchor ?? currentURL?.absoluteString, !u.isEmpty, !u.hasPrefix("about:") else { return nil }
         return SavedTab(url: u, title: title, kind: kind,
                         faviconBase64: faviconData?.base64EncodedString(),
                         folderId: folderId?.uuidString,
-                        workspaceId: workspaceId?.uuidString)
+                        workspaceId: workspaceId?.uuidString,
+                        customTitle: customTitle)
     }
 
     func stop() {
