@@ -5,9 +5,15 @@ import CryptoKit
 /// (in-memory, per-run) for the Tier-1 shim (FR-11, NFR-8).
 ///
 /// `storage.local` is a JSON dictionary encrypted with AES-GCM under a key held
-/// in the Keychain — defense in depth per Spike B, even though Pass's own
-/// payloads are already encrypted. Muninn never inspects the values; it only
-/// stores and returns the opaque JSON Pass hands it.
+/// in a `0600` file in Application Support — defense in depth per Spike B, even
+/// though Pass's own payloads are already encrypted. Muninn never inspects the
+/// values; it only stores and returns the opaque JSON Pass hands it.
+///
+/// The key lived in the login Keychain, but ad-hoc dev signatures change every
+/// rebuild, so the Keychain re-prompted for the password each launch (and an
+/// "allow any app" ACL just traded that for an "access data from other apps"
+/// prompt). A user-only file matches the accepted tradeoff (readable by any
+/// process running as the user) with zero prompts (Calvin, 2026-07-22).
 @MainActor
 final class ExtensionStorage {
     enum Area: String { case local, session }
@@ -18,14 +24,14 @@ final class ExtensionStorage {
     private let key: SymmetricKey
     private let inMemoryOnly: Bool
 
-    /// - Parameter inMemoryOnly: tests pass true to avoid Keychain/file IO.
+    /// - Parameter inMemoryOnly: tests pass true to avoid file IO.
     init(inMemoryOnly: Bool = false) {
         self.inMemoryOnly = inMemoryOnly
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Muninn", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.fileURL = dir.appendingPathComponent("storage.local.enc")
-        self.key = inMemoryOnly ? SymmetricKey(size: .bits256) : Self.keychainKey()
+        self.key = inMemoryOnly ? SymmetricKey(size: .bits256) : Self.storageKey(in: dir)
         if !inMemoryOnly { self.local = loadLocal() }
     }
 
@@ -99,40 +105,18 @@ final class ExtensionStorage {
         try? sealed.write(to: fileURL, options: .atomic)
     }
 
-    // MARK: - Keychain key
+    // MARK: - storage key (0600 file, no Keychain → no prompts)
 
-    private static let keychainAccount = "com.vezril.Muninn.extension-storage-key"
-
-    private static func keychainKey() -> SymmetricKey {
-        if let existing = readKey() { return existing }
+    /// The AES key, read from (or generated into) `storage.key` with user-only permissions.
+    private static func storageKey(in dir: URL) -> SymmetricKey {
+        let url = dir.appendingPathComponent("storage.key")
+        if let data = try? Data(contentsOf: url), data.count == 32 { return SymmetricKey(data: data) }
 
         let fresh = SymmetricKey(size: .bits256)
         let data = fresh.withUnsafeBytes { Data($0) }
-        let add: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainAccount,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let status = SecItemAdd(add as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            // A concurrent instance won the race — use the stored key so both
-            // instances agree (otherwise loadLocal() would silently AES-fail and
-            // reset storage.local).
-            if let raced = readKey() { return raced }
-        }
+        // Write owner-read/write only (0600); `.completeFileProtection` where supported.
+        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return fresh
-    }
-
-    private static func readKey() -> SymmetricKey? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainAccount,
-            kSecReturnData as String: true,
-        ]
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return SymmetricKey(data: data)
     }
 }
