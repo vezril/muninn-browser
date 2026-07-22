@@ -53,6 +53,9 @@ final class AppShell: NSObject {
     /// Remembers the last-active tab id per workspace (restored on switch).
     private var lastActiveTabId: [UUID: Int] = [:]
     private let workspaceBar = NSStackView()
+    private let libraryButton = HoverIconButton()
+    private let downloadStore = DownloadStore()
+    private var libraryPane: LibraryPane?
     /// Floating name shown while hovering a workspace chip.
     private let workspaceHoverLabel = NSTextField(labelWithString: "")
     /// Workspace currently targeted by the live NSColorPanel.
@@ -248,6 +251,11 @@ final class AppShell: NSObject {
         }
         // Developer Mode: right-click "View Page Source" → a new tab showing the HTML.
         tab.injector.onViewSource = { [weak self] wv in self?.viewSource(of: wv) }
+        // Record finished downloads for the Library + play the "drop into Library" animation.
+        tab.injector.onDownloadFinished = { [weak self] dest, source in
+            self?.downloadStore.add(path: dest, source: source)
+            self?.flyToLibrary(icon: NSWorkspace.shared.icon(forFile: dest.path))
+        }
         // target="_blank" / window.open: Peek from a pinned tab (cross-site), else a new tab.
         tab.injector.onCreateWebView = { [weak self, weak tab] action in
             guard let self, let tab, let url = action.request.url, url.scheme?.hasPrefix("http") == true else { return }
@@ -1720,6 +1728,52 @@ final class AppShell: NSObject {
         }
     }
 
+    // MARK: - Library
+
+    /// Animate a file icon "dropping" from the top into the Library button, then pulse the button.
+    private func flyToLibrary(icon: NSImage) {
+        guard let content = window.contentView else { return }
+        let iv = NSImageView(image: icon)
+        iv.imageScaling = .scaleProportionallyUpOrDown
+        iv.wantsLayer = true; iv.layer?.cornerRadius = 5; iv.layer?.masksToBounds = true
+        iv.shadow = NSShadow(); iv.layer?.shadowOpacity = 0.3; iv.layer?.shadowRadius = 6
+        let size: CGFloat = 44
+        let target = content.convert(libraryButton.bounds, from: libraryButton)
+        // Straight vertical drop: start directly above the Library button.
+        iv.frame = NSRect(x: target.midX - size / 2, y: content.bounds.maxY - 150, width: size, height: size)
+        content.addSubview(iv)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.55
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            iv.animator().frame = NSRect(x: target.midX - 6, y: target.midY - 6, width: 12, height: 12)
+            iv.animator().alphaValue = 0.1
+        }, completionHandler: { [weak self] in
+            iv.removeFromSuperview()
+            self?.pulseLibraryButton()
+        })
+    }
+
+    /// A quick accent flash on the Library button (paired with the drop animation).
+    private func pulseLibraryButton() {
+        libraryButton.wantsLayer = true
+        libraryButton.layer?.cornerRadius = 6
+        let flash = CABasicAnimation(keyPath: "backgroundColor")
+        flash.fromValue = NSColor.controlAccentColor.withAlphaComponent(0.6).cgColor
+        flash.toValue = NSColor.clear.cgColor
+        flash.duration = 0.45
+        flash.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        libraryButton.layer?.add(flash, forKey: "pulse")
+    }
+
+    @objc private func openLibrary() {
+        if let pane = libraryPane { pane.close(); return } // toggle closed
+        guard let content = window.contentView else { return }
+        let pane = LibraryPane(store: downloadStore, tint: currentTintColor())
+        pane.onClose = { [weak self] in self?.libraryPane = nil }
+        libraryPane = pane
+        pane.present(in: content)
+    }
+
     // MARK: - Ask Local Model (Ollama)
 
     /// Reveal the Ask chat tool in the Tools sidebar (non-blocking; keep browsing).
@@ -2408,6 +2462,15 @@ final class AppShell: NSObject {
         sidebar.addSubview(navRow)
         sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under nav
         sidebar.addSubview(settingsButton)
+        // Library button — bottom-left, beside the workspace switcher.
+        libraryButton.image = NSImage(systemSymbolName: "books.vertical", accessibilityDescription: "Library")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+        libraryButton.isBordered = false
+        libraryButton.contentTintColor = .secondaryLabelColor
+        libraryButton.target = self; libraryButton.action = #selector(openLibrary)
+        libraryButton.toolTip = "Library — downloads & media"
+        libraryButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(libraryButton)
         sidebar.addSubview(workspaceBar)
         sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
@@ -2423,9 +2486,13 @@ final class AppShell: NSObject {
             tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
-            workspaceBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            libraryButton.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            libraryButton.centerYAnchor.constraint(equalTo: workspaceBar.centerYAnchor),
+            libraryButton.widthAnchor.constraint(equalToConstant: 28),
+            libraryButton.heightAnchor.constraint(equalToConstant: 28),
+            workspaceBar.leadingAnchor.constraint(equalTo: libraryButton.trailingAnchor, constant: 8),
             workspaceBar.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
-            workspaceBar.widthAnchor.constraint(lessThanOrEqualToConstant: Self.sidebarWidth - 16),
+            workspaceBar.widthAnchor.constraint(lessThanOrEqualToConstant: Self.sidebarWidth - 42),
             workspaceHoverLabel.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
             workspaceHoverLabel.trailingAnchor.constraint(lessThanOrEqualTo: sidebar.trailingAnchor, constant: -8),
             workspaceHoverLabel.bottomAnchor.constraint(equalTo: workspaceBar.topAnchor, constant: -5),

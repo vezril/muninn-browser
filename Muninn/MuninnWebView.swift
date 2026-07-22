@@ -11,9 +11,29 @@ import WebKit
 final class MuninnWebView: WKWebView {
     /// Open the page's HTML source (host wires this to a new tab).
     var onViewSource: ((MuninnWebView) -> Void)?
+    /// Start a tracked download (Library) of a URL.
+    var onDownload: ((URL) -> Void)?
+    /// Last right-clicked image / link (set from an injected `contextmenu` listener).
+    var lastCtxImageURL: URL?
+    var lastCtxLinkURL: URL?
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
+
+        // Replace WebKit's native (untracked) "Download Image" with our tracked download items.
+        if let i = menu.items.firstIndex(where: { $0.title.localizedCaseInsensitiveContains("Download Image") }) {
+            menu.removeItem(at: i)
+        }
+        var addedDownload = false
+        if let img = lastCtxImageURL {
+            menu.addItem(.separator()); addedDownload = true
+            addDownloadItem(to: menu, "Save Image", img)
+        }
+        if let link = lastCtxLinkURL, link != lastCtxImageURL {
+            if !addedDownload { menu.addItem(.separator()) }
+            addDownloadItem(to: menu, "Download Linked File", link)
+        }
+
         guard AppSettings.developerMode else { return }
         // Replace WebKit's native (docked → blank/flicker in our custom window) "Inspect
         // Element" with our own that opens the inspector detached.
@@ -32,6 +52,15 @@ final class MuninnWebView: WKWebView {
 
     @objc private func viewSourceMenu() { onViewSource?(self) }
     @objc private func inspectMenu() { showInspector() }
+
+    private func addDownloadItem(to menu: NSMenu, _ title: String, _ url: URL) {
+        let item = NSMenuItem(title: title, action: #selector(downloadFromMenu(_:)), keyEquivalent: "")
+        item.target = self; item.representedObject = url
+        menu.addItem(item)
+    }
+    @objc private func downloadFromMenu(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL { onDownload?(url) }
+    }
 
     /// Open the in-app Web Inspector, detached as its own window (private API; guarded).
     ///
