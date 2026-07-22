@@ -22,6 +22,8 @@ final class AppShell: NSObject {
     /// Recently closed regular tabs (for Cmd+Shift+T), most-recent last.
     private var closedTabs: [SavedTab] = []
     private var palette: CommandPalette?
+    private let askChat = AskChatView()
+    private var askTask: Task<Void, Never>?
     private var quickLooks: [QuickLookWindow] = []
     private var nextQuickLookId = 0
     private var peek: PeekOverlay?
@@ -1681,6 +1683,7 @@ final class AppShell: NSObject {
             .init(id: "reload", title: "Reload", symbol: "arrow.clockwise", shortcut: sc(.reload)),
             .init(id: "copyURL", title: "Copy URL", symbol: "link", shortcut: sc(.copyURL)),
             .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
+            .init(id: "askModel", title: "Ask Local Model…", symbol: "sparkles", shortcut: nil),
         ]
         // Switch Space — one entry per workspace (all but the active one).
         for ws in workspaces where ws.id != activeWorkspaceId {
@@ -1712,7 +1715,40 @@ final class AppShell: NSObject {
         case "settings":      openSettings()
         case "inspect":       inspectActiveTab()
         case "viewSource":    viewSource(of: activeWebView)
+        case "askModel":      openAskModel()
         default:              break
+        }
+    }
+
+    // MARK: - Ask Local Model (Ollama)
+
+    /// Reveal the Ask chat tool in the Tools sidebar (non-blocking; keep browsing).
+    private func openAskModel() {
+        if !toolsOpen { setToolsOpen(true, animated: true) }
+        toolsSidebar.selectTool("ask")
+        askChat.focusInput()
+    }
+
+    /// Stream a chat turn from the configured local model into the chat view.
+    private func runChatTurn(_ messages: [ChatMessage],
+                             onToken: @escaping (String) -> Void, onDone: @escaping (Error?) -> Void) {
+        let model = OllamaSettings.defaultModel
+        guard !model.isEmpty else {
+            onDone(OllamaError.unreachable("No default model. Set one in Settings → Models.")); return
+        }
+        guard let base = OllamaSettings.baseURLValue else { onDone(OllamaError.badURL); return }
+        let payload = messages.map { ["role": $0.role.rawValue, "content": $0.text] }
+        let client = OllamaClient(baseURL: base)
+        askTask?.cancel()
+        askTask = Task { @MainActor in
+            do {
+                for try await token in client.chatStream(model: model, messages: payload) { onToken(token) }
+                onDone(nil)
+            } catch is CancellationError {
+                onDone(nil)
+            } catch {
+                onDone(error)
+            }
         }
     }
 
@@ -2465,7 +2501,18 @@ final class AppShell: NSObject {
             self?.openRouted(url, newTab: true)
             self?.window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         }
-        toolsSidebar.setTool(liveCalendars.isEmpty ? nil : liveWidget)
+        askChat.runChat = { [weak self] messages, onToken, onDone in
+            self?.runChatTurn(messages, onToken: onToken, onDone: onDone)
+        }
+        rebuildTools()
+    }
+
+    /// Register the Tools-sidebar tools (Calendar + Ask). Keeps the current selection.
+    private func rebuildTools() {
+        toolsSidebar.setTools([
+            .init(id: "calendar", title: "Calendar", symbol: "calendar", view: liveWidget),
+            .init(id: "ask", title: "Ask", symbol: "sparkles", view: askChat),
+        ])
     }
 
     // MARK: - Live Calendar
@@ -2501,7 +2548,6 @@ final class AppShell: NSObject {
 
     /// Called by Settings when the calendar list changes.
     private func liveCalendarsChanged() {
-        toolsSidebar.setTool(liveCalendars.isEmpty ? nil : liveWidget)
         calendarFeed.setCalendars(liveCalendars)
         resolveCalendar()
         persist()

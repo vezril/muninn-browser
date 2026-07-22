@@ -1,18 +1,18 @@
 import AppKit
 
-/// The right-hand Tools sidebar: a workspace-tinted panel that hosts a vertical stack of
-/// tool widgets (the Live Calendar is the first). Mirrors the left sidebar's visual language
-/// — flush to the window edge, tinted, framing the floating web card on the right.
-///
-/// Group 1 (this change) ships the shell + an empty state; tools are added into `contentStack`.
+/// The right-hand Tools sidebar: a workspace-tinted panel hosting a set of tool widgets with a
+/// compact switcher at the top (Calendar / Ask / …). Mirrors the left sidebar's visual language.
 @MainActor
 final class ToolsSidebar: NSView {
-    /// Where tool widgets are stacked (top → bottom). Add/remove arranged subviews, then
-    /// call `refreshEmptyState()`.
-    let contentStack = NSStackView()
+    struct Tool { let id: String; let title: String; let symbol: String; let view: NSView }
 
-    private let header = NSTextField(labelWithString: "Tools")
-    private let emptyLabel = NSTextField(labelWithString: "No tools yet.\nAdd a calendar in Settings → Calendars.")
+    private(set) var selectedId: String?
+    private var tools: [Tool] = []
+    private var buttons: [String: NSButton] = [:]
+
+    private let switcher = NSStackView()
+    private let container = NSView()
+    private let emptyLabel = NSTextField(labelWithString: "No tools yet.")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -23,57 +23,83 @@ final class ToolsSidebar: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func build() {
-        header.font = .systemFont(ofSize: 12, weight: .semibold)
-        header.textColor = .secondaryLabelColor
-        header.translatesAutoresizingMaskIntoConstraints = false
-
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = 10
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-
-        emptyLabel.font = .systemFont(ofSize: 12)
-        emptyLabel.textColor = .tertiaryLabelColor
+        switcher.orientation = .horizontal
+        switcher.spacing = 4
+        switcher.translatesAutoresizingMaskIntoConstraints = false
+        container.translatesAutoresizingMaskIntoConstraints = false
+        emptyLabel.font = .systemFont(ofSize: 12); emptyLabel.textColor = .tertiaryLabelColor
         emptyLabel.alignment = .center
-        emptyLabel.maximumNumberOfLines = 3
-        emptyLabel.lineBreakMode = .byWordWrapping
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(header); addSubview(contentStack); addSubview(emptyLabel)
+        addSubview(switcher); addSubview(container); addSubview(emptyLabel)
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: topAnchor, constant: 44),
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-
-            contentStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
-            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-
+            switcher.topAnchor.constraint(equalTo: topAnchor, constant: 40),
+            switcher.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            switcher.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            container.topAnchor.constraint(equalTo: switcher.bottomAnchor, constant: 10),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             emptyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             emptyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
             emptyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
         ])
-        refreshEmptyState()
     }
 
-    /// Host a single tool view (full-width), or `nil` to show the empty state.
-    func setTool(_ view: NSView?) {
-        contentStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if let view {
-            contentStack.addArrangedSubview(view)
-            view.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+    /// Install the tools + switcher. Keeps the current selection if still present.
+    func setTools(_ tools: [Tool], select: String? = nil) {
+        self.tools = tools
+        switcher.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        buttons.removeAll()
+        for t in tools {
+            let b = NSButton(title: " " + t.title,
+                             image: NSImage(systemSymbolName: t.symbol, accessibilityDescription: nil)
+                                ?? NSImage(), target: self, action: #selector(switchTapped(_:)))
+            b.imagePosition = .imageLeading
+            b.isBordered = false
+            b.font = .systemFont(ofSize: 11, weight: .medium)
+            b.wantsLayer = true
+            b.layer?.cornerRadius = 6
+            b.identifier = NSUserInterfaceItemIdentifier(t.id)
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            buttons[t.id] = b
+            switcher.addArrangedSubview(b)
         }
-        refreshEmptyState()
+        switcher.isHidden = tools.count < 2 // one tool → no switcher needed
+        let target = select ?? selectedId ?? tools.first?.id
+        selectTool(target)
     }
 
-    /// Show the empty-state message only while no tools are stacked.
-    func refreshEmptyState() {
-        let hasTools = !contentStack.arrangedSubviews.isEmpty
-        emptyLabel.isHidden = hasTools
-        contentStack.isHidden = !hasTools
+    @objc private func switchTapped(_ sender: NSButton) { selectTool(sender.identifier?.rawValue) }
+
+    /// Show the tool with `id` (nil / unknown → empty state).
+    func selectTool(_ id: String?) {
+        container.subviews.forEach { $0.removeFromSuperview() }
+        guard let id, let tool = tools.first(where: { $0.id == id }) else {
+            selectedId = nil; emptyLabel.isHidden = tools.isEmpty ? false : true; highlight(nil); return
+        }
+        selectedId = id
+        emptyLabel.isHidden = true
+        let v = tool.view
+        v.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: container.topAnchor),
+            v.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        highlight(id)
     }
 
-    /// Match the active workspace tint (called from `applyWorkspaceTint`).
-    func applyTint(_ color: NSColor) {
-        layer?.backgroundColor = color.cgColor
+    private func highlight(_ id: String?) {
+        for (bid, b) in buttons {
+            let on = bid == id
+            b.layer?.backgroundColor = (on ? NSColor.controlAccentColor.withAlphaComponent(0.22) : .clear).cgColor
+            b.contentTintColor = on ? .controlAccentColor : .secondaryLabelColor
+        }
     }
+
+    func applyTint(_ color: NSColor) { layer?.backgroundColor = color.cgColor }
 }

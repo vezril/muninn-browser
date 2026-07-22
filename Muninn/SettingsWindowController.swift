@@ -10,10 +10,13 @@ final class SettingsWindowController: NSWindowController {
     private var navButtons: [NSButton] = []
     private let sections: [(title: String, icon: String)] = [
         ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
-        ("Calendars", "calendar"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
+        ("Calendars", "calendar"), ("Models", "cpu"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
     private let routingList = NSStackView()
     private let calendarList = NSStackView()
+    private let baseURLField = NSTextField()
+    private let modelPopup = NSPopUpButton()
+    private let modelStatus = NSTextField(labelWithString: "")
 
     // Profiles state
     private var selectedProfileId: UUID?
@@ -95,7 +98,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, routingView, calendarsView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -638,6 +641,92 @@ final class SettingsWindowController: NSWindowController {
     @objc private func calendarLeadChanged(_ s: NSPopUpButton) {
         guard let id = calId(s), s.indexOfSelectedItem < leadOptions.count else { return }
         host?.settingsUpdateCalendar(id) { $0.leadTimeMinutes = self.leadOptions[s.indexOfSelectedItem] }
+    }
+
+    // MARK: Models (Ollama)
+
+    private func modelsView() -> NSView {
+        let v = NSView()
+        let title = heading("Local Models")
+        let hint = NSTextField(labelWithString: "Run prompts against a local Ollama daemon — everything stays on your machine. Then use ⌘N → “Ask Local Model…”.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 2; hint.preferredMaxLayoutWidth = 620
+
+        baseURLField.stringValue = OllamaSettings.baseURL
+        baseURLField.placeholderString = OllamaSettings.defaultBaseURL
+        baseURLField.font = .systemFont(ofSize: 13)
+        baseURLField.target = self; baseURLField.action = #selector(baseURLChanged)
+        baseURLField.widthAnchor.constraint(equalToConstant: 300).isActive = true
+
+        modelPopup.target = self; modelPopup.action = #selector(modelChanged)
+        modelPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+
+        let test = NSButton(title: "Test Connection", target: self, action: #selector(testConnection))
+        test.bezelStyle = .rounded
+        modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = .secondaryLabelColor
+        let testRow = NSStackView(views: [test, modelStatus])
+        testRow.orientation = .horizontal; testRow.spacing = 10; testRow.alignment = .centerY
+        testRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = formStack([ row("Ollama URL", baseURLField), row("Default model", modelPopup) ])
+        for s in [title, hint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        v.addSubview(stack); v.addSubview(testRow)
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            testRow.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 16),
+            testRow.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+        ])
+        loadModels(reportStatus: false)
+        return v
+    }
+
+    @objc private func baseURLChanged() {
+        OllamaSettings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
+        loadModels(reportStatus: false)
+    }
+    @objc private func modelChanged() {
+        if let title = modelPopup.titleOfSelectedItem, !title.hasPrefix("—") { OllamaSettings.defaultModel = title }
+    }
+    @objc private func testConnection() {
+        OllamaSettings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
+        loadModels(reportStatus: true)
+    }
+
+    /// Fetch installed models and repopulate the picker; optionally show connection status.
+    private func loadModels(reportStatus: Bool) {
+        guard let base = OllamaSettings.baseURLValue else {
+            modelStatus.stringValue = "Invalid URL"; modelStatus.textColor = .systemRed; return
+        }
+        if reportStatus { modelStatus.stringValue = "Connecting…"; modelStatus.textColor = .secondaryLabelColor }
+        Task { @MainActor in
+            do {
+                let models = try await OllamaClient(baseURL: base).listModels()
+                modelPopup.removeAllItems()
+                if models.isEmpty {
+                    modelPopup.addItem(withTitle: "— no models installed —")
+                } else {
+                    modelPopup.addItems(withTitles: models)
+                    let current = OllamaSettings.defaultModel
+                    if models.contains(current) { modelPopup.selectItem(withTitle: current) }
+                    else { OllamaSettings.defaultModel = models[0]; modelPopup.selectItem(at: 0) }
+                }
+                if reportStatus {
+                    modelStatus.stringValue = "✓ Connected · \(models.count) model\(models.count == 1 ? "" : "s")"
+                    modelStatus.textColor = .systemGreen
+                }
+            } catch {
+                if reportStatus {
+                    modelStatus.stringValue = "✗ \(error.localizedDescription)"; modelStatus.textColor = .systemRed
+                }
+            }
+        }
     }
 
     // MARK: Advanced
