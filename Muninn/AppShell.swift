@@ -2010,16 +2010,9 @@ final class AppShell: NSObject {
         guard let context = extActionButtons[sender], !tabs.isEmpty else { return }
         let proxy = extensionBridge.proxy(for: activeTab)
         guard let action = context.action(for: proxy) else { return }
-        if action.presentsPopup {
-            if let popover = action.popupPopover {
-                popover.behavior = .transient
-                popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
-            } else {
-                context.performAction(for: proxy)   // WebKit builds the popup → presentActionPopup delegate
-            }
-        } else {
-            context.performAction(for: proxy)   // popup-less action → fire onClicked
-        }
+        // Canonical path: performAction prepares + sizes the popup and drives the presentActionPopup
+        // delegate (WebKit controls the popup web view's viewport; hosting it ourselves fails).
+        context.performAction(for: proxy)
     }
 
     private func pin(_ v: NSView, to parent: NSView) {
@@ -3304,6 +3297,10 @@ extension AppShell: ExtensionHost {
     /// Show an extension's popup anchored to its toolbar button (falls back to the gear).
     func extPresentActionPopover(_ popover: NSPopover, for context: WKWebExtensionContext) {
         let anchor = extActionButtons.first(where: { $0.value === context })?.key ?? settingsButton
+        popover.behavior = .transient   // dismiss on click-outside / Esc
+        if popover.contentSize.width < 80 || popover.contentSize.height < 80 {
+            popover.contentSize = NSSize(width: 380, height: 600)
+        }
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 }

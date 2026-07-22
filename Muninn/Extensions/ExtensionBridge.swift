@@ -63,6 +63,16 @@ final class ExtensionBridge: NSObject, WKWebExtensionControllerDelegate {
                                completionHandler: @escaping ((any Error)?) -> Void) {
         if let popover = action.popupPopover {
             host?.extPresentActionPopover(popover, for: context)
+            // Some popups (async/React-rendered) size themselves to the viewport, which WebKit
+            // initially reports as ~1×1, so they collapse to blank. If that happened, force a
+            // default document size so WebKit re-measures and the popup renders.
+            if let pv = action.popupWebView {
+                pv.evaluateJavaScript("innerWidth") { r, _ in
+                    guard let w = r as? Int, w <= 1 else { return }
+                    let force = "(function(){var s=document.createElement('style');s.textContent='html,body{width:380px!important;min-width:380px!important;height:600px!important;min-height:600px!important}';document.head.appendChild(s);})();true"
+                    pv.evaluateJavaScript(force, completionHandler: nil)
+                }
+            }
         }
         completionHandler(nil)
     }

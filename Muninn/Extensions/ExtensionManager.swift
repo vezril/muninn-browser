@@ -164,6 +164,7 @@ final class ExtensionManager {
         do {
             try controller.load(context)
             contexts[id] = context
+            context.isInspectable = true   // allow attaching Web Inspector to an extension's popup/background
             onChange?()   // context is live now (loads are async) → refresh the action toolbar
         } catch {
             NSLog("[ext] controller.load failed for %@: %@", id, String(describing: error))
@@ -221,6 +222,7 @@ final class ExtensionManager {
     private func saveIndex() {
         if let data = try? JSONEncoder().encode(installed) { try? data.write(to: indexURL, options: .atomic) }
     }
+
 
     enum ExtError: LocalizedError {
         case noManifest, badStoreURL, downloadFailed
