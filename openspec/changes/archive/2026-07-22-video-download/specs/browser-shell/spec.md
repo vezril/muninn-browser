@@ -28,11 +28,9 @@ Trash (recoverable), and Remove from List.
 - **WHEN** the user right-clicks a download and chooses Show in Finder
 - **THEN** the file is revealed in Finder
 
-## MODIFIED Requirements
-
-### Requirement: Address-bar toolbar controls
-The address-bar/nav toolbar controls SHALL remain fully clickable at every allowed sidebar width, and the
-settings control SHALL open the Settings window.
+### Requirement: Toolbar control reliability
+The nav toolbar controls SHALL remain fully clickable at every allowed sidebar width, and the settings
+control SHALL open the Settings window.
 
 #### Scenario: settings at a narrow sidebar
 - **WHEN** the sidebar is at its minimum width and the user clicks the settings control
