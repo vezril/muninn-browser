@@ -959,6 +959,7 @@ final class SettingsWindowController: NSWindowController {
             row("Bounce-tracking protection", makeSwitch(s.debounce, #selector(shieldDebounce(_:)))),
             row("Fingerprinting protection", makeSwitch(s.fingerprintProtection, #selector(shieldFP(_:)))),
             row("Block cookie-consent notices", makeSwitch(s.blockCookieNotices, #selector(shieldCookieNotices(_:)))),
+            row("Strip trackers from copied & shared links", makeSwitch(s.cleanSharedLinks, #selector(shieldShareLinks(_:)))),
         ])
         for x in [title, hint] { x.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(x) }
         v.addSubview(stack)
@@ -981,6 +982,7 @@ final class SettingsWindowController: NSWindowController {
     @objc private func shieldDebounce(_ s: NSSwitch) { ShieldsManager.shared.debounce = (s.state == .on) }
     @objc private func shieldFP(_ s: NSSwitch) { ShieldsManager.shared.fingerprintProtection = (s.state == .on) }
     @objc private func shieldCookieNotices(_ s: NSSwitch) { ShieldsManager.shared.blockCookieNotices = (s.state == .on) }
+    @objc private func shieldShareLinks(_ s: NSSwitch) { ShieldsManager.shared.cleanSharedLinks = (s.state == .on) }
 
     // MARK: Obsidian
 
