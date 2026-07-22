@@ -26,6 +26,7 @@ final class AppShell: NSObject {
     private var askTask: Task<Void, Never>?
     private let notificationStore = NotificationStore()
     private let notificationsView = NotificationsView()
+    private let remindersTool = RemindersTool()
     private var quickLooks: [QuickLookWindow] = []
     private var nextQuickLookId = 0
     private var taskManager: TaskManagerWindow?
@@ -1871,6 +1872,10 @@ final class AppShell: NSObject {
             .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
             .init(id: "taskManager", title: "Task Manager", symbol: "gauge.with.dots.needle.bottom.50percent", shortcut: nil),
             .init(id: "translatePage", title: "Translate Page", symbol: "translate", shortcut: nil),
+            .init(id: "reminders", title: "Show Reminders", symbol: "checklist", shortcut: nil),
+            .init(id: "newReminder", title: "New Reminder…", symbol: "plus.circle", shortcut: nil),
+            .init(id: "reminderFromPage", title: "New Reminder from Page", symbol: "bookmark", shortcut: nil),
+            .init(id: "listFromPage", title: "Create Reminders List from Page", symbol: "list.bullet.rectangle", shortcut: nil),
             .init(id: "askModel", title: "Ask Local Model…", symbol: "sparkles", shortcut: nil),
         ]
         if ObsidianSettings.isConfigured {
@@ -1952,6 +1957,9 @@ final class AppShell: NSObject {
         }
     }
 
+    /// Run a palette command by id from outside (e.g. menu items).
+    func performCommand(_ id: String) { runPaletteCommand(id) }
+
     private func runPaletteCommand(_ id: String) {
         if id.hasPrefix("space:"), let uuid = UUID(uuidString: String(id.dropFirst("space:".count))) {
             switchWorkspace(to: uuid); return
@@ -1970,6 +1978,10 @@ final class AppShell: NSObject {
         case "settings":      openSettings()
         case "taskManager":   openTaskManager()
         case "translatePage": translateButtonClicked()
+        case "reminders":         revealRemindersTool()
+        case "newReminder":       newReminder()
+        case "reminderFromPage":  reminderFromPage()
+        case "listFromPage":      listFromPage()
         case "inspect":       inspectActiveTab()
         case "viewSource":    viewSource(of: activeWebView)
         case "askModel":      openAskModel()
@@ -2343,6 +2355,139 @@ final class AppShell: NSObject {
 
     /// Decoded shape of a `PageTranslationScript.extract` entry.
     private struct TextNode: Decodable { let id: Int; let text: String }
+
+    // MARK: - Reminders (EventKit)
+
+    /// Open the Tools sidebar and show the Reminders tool.
+    func revealRemindersTool() {
+        if !toolsOpen { setToolsOpen(true, animated: true) }
+        toolsSidebar.selectTool("reminders")
+    }
+
+    /// Ensure Reminders access, then run `body`. Surfaces a toast if declined.
+    private func withReminders(_ body: @escaping () -> Void) {
+        let svc = RemindersService.shared
+        if svc.authorized { body(); return }
+        Task { @MainActor in
+            if await svc.requestAccess() { body() }
+            else { self.showToast("Muninn needs Reminders access — enable it in System Settings › Privacy & Security › Reminders") }
+        }
+    }
+
+    /// Quick add: prompt for text, add to the default list.
+    private func newReminder() {
+        withReminders { [weak self] in
+            guard let self, let title = self.promptForText(title: "New Reminder", message: "Reminder:", initial: "") else { return }
+            do {
+                try RemindersService.shared.createReminder(title: title, inListId: RemindersService.shared.defaultListId())
+                self.showToast("Reminder added")
+                self.revealRemindersTool()
+            } catch { self.showToast("Couldn't add the reminder") }
+        }
+    }
+
+    /// Add the current page (title + URL) as a reminder — a "read later" / follow-up.
+    private func reminderFromPage() {
+        let title = activeTab.displayTitle.isEmpty ? (activeWebView.url?.host ?? "Page") : activeTab.displayTitle
+        let url = activeWebView.url
+        withReminders { [weak self] in
+            guard let self else { return }
+            do {
+                try RemindersService.shared.createReminder(title: title, notes: url?.absoluteString, url: url,
+                                                           inListId: RemindersService.shared.defaultListId())
+                self.showToast("Saved “\(title)” to Reminders")
+                self.revealRemindersTool()
+            } catch { self.showToast("Couldn't save to Reminders") }
+        }
+    }
+
+    /// Turn the current page into a new Reminders list. Structured schema.org/Recipe data first
+    /// (ingredients or steps); if none, fall back to the local model. Fully on-device.
+    private func listFromPage() {
+        let wv = activeWebView
+        withReminders { [weak self] in
+            guard let self else { return }
+            wv.evaluateJavaScript(PageListExtractor.script) { [weak self] result, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let json = result as? String,
+                       let recipe = PageListExtractor.decode(json), recipe.hasStructuredData {
+                        self.buildListFromRecipe(recipe)
+                    } else {
+                        self.buildListFromModel()   // no structured data → local model
+                    }
+                }
+            }
+        }
+    }
+
+    /// Structured path: if both ingredients and steps exist, ask which; otherwise use what's present.
+    private func buildListFromRecipe(_ recipe: PageListExtractor.Recipe) {
+        var items = recipe.ingredients
+        if !recipe.ingredients.isEmpty && !recipe.steps.isEmpty {
+            let a = NSAlert()
+            a.messageText = "Create list from “\(recipe.listName)”"
+            a.informativeText = "This page has both ingredients and steps. Which should the list contain?"
+            a.addButton(withTitle: "Ingredients")
+            a.addButton(withTitle: "Steps")
+            a.addButton(withTitle: "Cancel")
+            switch a.runModal() {
+            case .alertFirstButtonReturn:  items = recipe.ingredients
+            case .alertSecondButtonReturn: items = recipe.steps
+            default: return
+            }
+        } else if recipe.ingredients.isEmpty {
+            items = recipe.steps
+        }
+        createList(named: recipe.listName, items: items)
+    }
+
+    /// Fallback path: ask the local model to extract a `{name, items}` list from the page text.
+    private func buildListFromModel() {
+        guard !OllamaSettings.defaultModel.isEmpty, let base = OllamaSettings.baseURLValue else {
+            showToast("No list data on this page. Configure a local model (Settings → Models) to extract one.")
+            return
+        }
+        showToast("Reading the page…", record: false)
+        currentPageText { [weak self] title, url, text in
+            guard let self else { return }
+            let prompt = """
+            From the web page below, extract the list a person would want as reminders — e.g. recipe \
+            ingredients, shopping items, a checklist, or steps. Respond with ONLY JSON, no prose:
+            {"name": "<short list name>", "items": ["item one", "item two"]}
+
+            Title: \(title)
+            URL: \(url)
+
+            \(text)
+            """
+            let client = OllamaClient(baseURL: base)
+            self.askTask?.cancel()
+            self.askTask = Task { @MainActor in
+                var raw = ""
+                do { for try await tok in client.generateStream(model: OllamaSettings.defaultModel, prompt: prompt) { raw += tok } }
+                catch { self.showToast("Couldn't reach the local model"); return }
+                guard let list = PageListExtractor.decodeModelList(raw) else {
+                    self.showToast("Couldn't find a list on this page"); return
+                }
+                self.createList(named: list.name, items: list.items)
+            }
+        }
+    }
+
+    /// Create a new Reminders list and populate it, then reveal the tool focused on it.
+    private func createList(named name: String, items: [String]) {
+        let clean = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !clean.isEmpty else { showToast("Nothing to add to a list"); return }
+        let listName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New List" : name
+        do {
+            let id = try RemindersService.shared.createList(named: listName)
+            let n = try RemindersService.shared.addReminders(clean, toListId: id)
+            revealRemindersTool()
+            remindersTool.focusList(id: id)
+            showToast("Created “\(listName)” with \(n) item\(n == 1 ? "" : "s")")
+        } catch { showToast("Couldn't create the list") }
+    }
 
     // MARK: - Shields
 
@@ -3065,6 +3210,7 @@ final class AppShell: NSObject {
     private func rebuildTools() {
         toolsSidebar.setTools([
             .init(id: "calendar", title: "Calendar", symbol: "calendar", view: liveWidget),
+            .init(id: "reminders", title: "Reminders", symbol: "checklist", view: remindersTool),
             .init(id: "ask", title: "Ask", symbol: "sparkles", view: askChat),
             .init(id: "notifications", title: "Notifications", symbol: "bell", view: notificationsView),
         ])

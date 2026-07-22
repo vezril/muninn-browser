@@ -69,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func newQuickLook() { shell?.openQuickLook(nil) }
     @objc private func openTaskManager() { shell?.openTaskManager() }
     @objc private func translatePage() { shell?.translateButtonClicked() }
+    @objc private func showReminders() { shell?.revealRemindersTool() }
+    @objc private func newReminder() { shell?.performCommand("newReminder") }
+    @objc private func reminderFromPage() { shell?.performCommand("reminderFromPage") }
+    @objc private func listFromPage() { shell?.performCommand("listFromPage") }
 
     @objc private func setAsDefaultBrowser() {
         let bundleURL = Bundle.main.bundleURL
@@ -119,6 +123,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Translate Page", action: #selector(translatePage), keyEquivalent: "").target = self
+        fileMenu.addItem(.separator())
+        // Reminders submenu.
+        let remindersItem = NSMenuItem(title: "Reminders", action: nil, keyEquivalent: "")
+        let remindersMenu = NSMenu(title: "Reminders")
+        remindersMenu.addItem(withTitle: "Show Reminders", action: #selector(showReminders), keyEquivalent: "").target = self
+        remindersMenu.addItem(.separator())
+        remindersMenu.addItem(withTitle: "New Reminder…", action: #selector(newReminder), keyEquivalent: "").target = self
+        remindersMenu.addItem(withTitle: "New Reminder from Page", action: #selector(reminderFromPage), keyEquivalent: "").target = self
+        remindersMenu.addItem(withTitle: "Create Reminders List from Page", action: #selector(listFromPage), keyEquivalent: "").target = self
+        remindersItem.submenu = remindersMenu
+        fileMenu.addItem(remindersItem)
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
