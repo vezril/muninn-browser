@@ -23,6 +23,8 @@ final class ShieldsManager {
     var blockCookies: Bool { get { d.object(forKey: kCookies) as? Bool ?? true } set { d.set(newValue, forKey: kCookies); rebuild() } }
     /// Strip tracking query params from navigations (not a content rule — applied in-flight).
     var stripQueryParams: Bool { get { d.object(forKey: kStrip) as? Bool ?? true } set { d.set(newValue, forKey: kStrip) } }
+    /// Fingerprint defense (farbling) — injected MAIN-world script; read at tab creation.
+    var fingerprintProtection: Bool { get { d.object(forKey: kFP) as? Bool ?? true } set { d.set(newValue, forKey: kFP) } }
 
     // MARK: per-site state
 
@@ -106,7 +108,7 @@ final class ShieldsManager {
 
     private let d = UserDefaults.standard
     private let kAds = "muninn.shields.ads", kHTTPS = "muninn.shields.https", kCookies = "muninn.shields.cookies"
-    private let kStrip = "muninn.shields.strip"
+    private let kStrip = "muninn.shields.strip", kFP = "muninn.shields.fp"
     private let kDown = "muninn.shields.down", kScripts = "muninn.shields.scripts"
 
     private var shieldsDownList: Set<String> {

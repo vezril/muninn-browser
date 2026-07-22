@@ -116,6 +116,10 @@ final class InjectionCoordinator: NSObject {
                let wa = try? String(contentsOf: root.appendingPathComponent("webauthn.js"), encoding: .utf8) {
                 addUserScript(wa, at: .atDocumentStart, world: .page, allFrames: true)
             }
+            // Shields: fingerprint defense (farbling) — MAIN world, before page scripts.
+            if ShieldsManager.shared.fingerprintProtection {
+                addUserScript(FingerprintDefense.script, at: .atDocumentStart, world: .page, allFrames: true)
+            }
         }
 
         // Broker handler registered ONLY for the isolated world — the page MAIN

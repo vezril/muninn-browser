@@ -757,6 +757,7 @@ final class SettingsWindowController: NSWindowController {
             row("Upgrade connections to HTTPS", makeSwitch(s.upgradeHTTPS, #selector(shieldHTTPS(_:)))),
             row("Block cross-site cookies", makeSwitch(s.blockCookies, #selector(shieldCookies(_:)))),
             row("Strip tracking URL parameters", makeSwitch(s.stripQueryParams, #selector(shieldStrip(_:)))),
+            row("Fingerprinting protection", makeSwitch(s.fingerprintProtection, #selector(shieldFP(_:)))),
         ])
         for x in [title, hint] { x.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(x) }
         v.addSubview(stack)
@@ -776,6 +777,7 @@ final class SettingsWindowController: NSWindowController {
     @objc private func shieldHTTPS(_ s: NSSwitch) { ShieldsManager.shared.upgradeHTTPS = (s.state == .on) }
     @objc private func shieldCookies(_ s: NSSwitch) { ShieldsManager.shared.blockCookies = (s.state == .on) }
     @objc private func shieldStrip(_ s: NSSwitch) { ShieldsManager.shared.stripQueryParams = (s.state == .on) }
+    @objc private func shieldFP(_ s: NSSwitch) { ShieldsManager.shared.fingerprintProtection = (s.state == .on) }
 
     // MARK: Obsidian
 
