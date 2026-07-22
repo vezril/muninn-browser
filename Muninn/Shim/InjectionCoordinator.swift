@@ -118,7 +118,8 @@ final class InjectionCoordinator: NSObject {
             }
             // Shields: fingerprint defense (farbling) — MAIN world, before page scripts.
             if ShieldsManager.shared.fingerprintProtection {
-                addUserScript(FingerprintDefense.script, at: .atDocumentStart, world: .page, allFrames: true)
+                addUserScript(FingerprintDefense.script(sessionToken: ShieldsManager.shared.sessionToken),
+                              at: .atDocumentStart, world: .page, allFrames: true)
             }
         }
 

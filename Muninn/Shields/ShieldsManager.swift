@@ -25,6 +25,13 @@ final class ShieldsManager {
     var stripQueryParams: Bool { get { d.object(forKey: kStrip) as? Bool ?? true } set { d.set(newValue, forKey: kStrip) } }
     /// Fingerprint defense (farbling) — injected MAIN-world script; read at tab creation.
     var fingerprintProtection: Bool { get { d.object(forKey: kFP) as? Bool ?? true } set { d.set(newValue, forKey: kFP) } }
+    /// Bounce-tracking protection (debouncing) — applied in-flight in `decideNavigation`.
+    var debounce: Bool { get { d.object(forKey: kDebounce) as? Bool ?? true } set { d.set(newValue, forKey: kDebounce) } }
+
+    /// A random token generated once per app session (never persisted) — mixed with the site's
+    /// eTLD+1 to seed farbling, so values are consistent within a session but differ across
+    /// sites and across sessions (fingerprinting 2.0).
+    let sessionToken = UUID().uuidString
 
     // MARK: per-site state
 
@@ -108,7 +115,7 @@ final class ShieldsManager {
 
     private let d = UserDefaults.standard
     private let kAds = "muninn.shields.ads", kHTTPS = "muninn.shields.https", kCookies = "muninn.shields.cookies"
-    private let kStrip = "muninn.shields.strip", kFP = "muninn.shields.fp"
+    private let kStrip = "muninn.shields.strip", kFP = "muninn.shields.fp", kDebounce = "muninn.shields.debounce"
     private let kDown = "muninn.shields.down", kScripts = "muninn.shields.scripts"
 
     private var shieldsDownList: Set<String> {
