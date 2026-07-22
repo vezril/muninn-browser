@@ -21,6 +21,8 @@ final class ShieldsManager {
     var blockAds: Bool { get { d.object(forKey: kAds) as? Bool ?? true } set { d.set(newValue, forKey: kAds); rebuild() } }
     var upgradeHTTPS: Bool { get { d.object(forKey: kHTTPS) as? Bool ?? true } set { d.set(newValue, forKey: kHTTPS); rebuild() } }
     var blockCookies: Bool { get { d.object(forKey: kCookies) as? Bool ?? true } set { d.set(newValue, forKey: kCookies); rebuild() } }
+    /// Strip tracking query params from navigations (not a content rule — applied in-flight).
+    var stripQueryParams: Bool { get { d.object(forKey: kStrip) as? Bool ?? true } set { d.set(newValue, forKey: kStrip) } }
 
     // MARK: per-site state
 
@@ -104,6 +106,7 @@ final class ShieldsManager {
 
     private let d = UserDefaults.standard
     private let kAds = "muninn.shields.ads", kHTTPS = "muninn.shields.https", kCookies = "muninn.shields.cookies"
+    private let kStrip = "muninn.shields.strip"
     private let kDown = "muninn.shields.down", kScripts = "muninn.shields.scripts"
 
     private var shieldsDownList: Set<String> {

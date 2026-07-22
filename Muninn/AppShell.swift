@@ -289,6 +289,14 @@ final class AppShell: NSObject {
     /// A cross-site link click in a pinned/favourite tab opens a Peek instead of navigating
     /// the anchored tab away from its home.
     private func decideNavigation(for tab: BrowserTab, _ action: WKNavigationAction) -> WKNavigationActionPolicy {
+        // Shields: strip tracking query params from main-frame navigations, then re-load clean.
+        if let url = action.request.url, url.scheme?.hasPrefix("http") == true,
+           action.targetFrame?.isMainFrame == true,
+           shields.stripQueryParams, shields.shieldsUp(for: url.host),
+           let cleaned = QueryStripper.strip(url) {
+            DispatchQueue.main.async { [weak self] in self?.loadCleaned(cleaned, in: tab) }
+            return .cancel
+        }
         guard tab.kind != .regular,
               action.navigationType == .linkActivated,
               action.targetFrame?.isMainFrame == true,
@@ -300,6 +308,16 @@ final class AppShell: NSObject {
         // navigation-policy callback re-enters WebKit and crashes.
         DispatchQueue.main.async { [weak self] in self?.showPeek(url) }
         return .cancel
+    }
+
+    /// Load a query-stripped URL, preserving the Peek behaviour for pinned/favourite tabs.
+    private func loadCleaned(_ url: URL, in tab: BrowserTab) {
+        if tab.kind != .regular, let home = tab.homeURL ?? tab.webView.url,
+           let hh = home.host, let nh = url.host, hh != nh {
+            showPeek(url)
+        } else {
+            tab.load(url)
+        }
     }
 
     // MARK: - Peek (link preview from pinned tabs)
