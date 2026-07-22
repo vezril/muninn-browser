@@ -35,6 +35,10 @@ final class InjectionCoordinator: NSObject {
     var downloadFolder: (() -> URL)?
     /// Developer Mode: right-click "View Page Source" on this web view.
     var onViewSource: ((WKWebView) -> Void)?
+    /// A finished download → recorded in the Library (destination, source URL).
+    var onDownloadFinished: ((URL, URL?) -> Void)?
+    /// In-flight download → (destination, source) for recording on completion.
+    private var downloadInfo: [ObjectIdentifier: (dest: URL, source: URL?)] = [:]
 
     /// Observations for the S2 spike artifact.
     private(set) var events: [[String: Any]] = []
@@ -122,9 +126,26 @@ final class InjectionCoordinator: NSObject {
         // Media state channel (Mini Player), isolated world.
         config.userContentController.add(MediaHandler(injector: self), contentWorld: isolatedWorld, name: "muninnMedia")
 
+        // Context-menu download capture (MAIN world): record the right-clicked image/link so the
+        // menu can offer a *tracked* "Save Image to Library" / "Download Linked File" (WebKit's
+        // native save bypasses WKDownloadDelegate, so we route our own download instead).
+        let ctxScript = """
+        document.addEventListener('contextmenu', function(e){ try {
+          var t = e.target, img = '';
+          if (t && t.tagName === 'IMG') img = t.currentSrc || t.src || '';
+          if (!img && t && t.closest) { var im = t.closest('img'); if (im) img = im.currentSrc || im.src || ''; }
+          var a = (t && t.closest) ? t.closest('a[href]') : null, link = a ? a.href : '';
+          if (window.webkit && webkit.messageHandlers && webkit.messageHandlers.muninnCtx)
+            webkit.messageHandlers.muninnCtx.postMessage({ img: img || '', link: link || '' });
+        } catch (_) {} }, true);
+        """
+        addUserScript(ctxScript, at: .atDocumentStart, world: .page, allFrames: true)
+        config.userContentController.add(ContextMenuHandler(injector: self), contentWorld: .page, name: "muninnCtx")
+
         configHook?(config)
         let mwv = MuninnWebView(frame: .zero, configuration: config)
         mwv.onViewSource = { [weak self] wv in self?.onViewSource?(wv) }
+        mwv.onDownload = { [weak self] url in self?.startDownload(url) }
         self.webView = mwv
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
@@ -268,6 +289,31 @@ private final class MediaHandler: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// Records the right-clicked image/link URL onto the MuninnWebView for the download menu items.
+@MainActor
+private final class ContextMenuHandler: NSObject, WKScriptMessageHandler {
+    weak var injector: InjectionCoordinator?
+    init(injector: InjectionCoordinator) { self.injector = injector }
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        let body = message.body as? [String: Any]
+        injector?.updateContextTargets(img: body?["img"] as? String, link: body?["link"] as? String)
+    }
+}
+
+extension InjectionCoordinator {
+    /// Update the web view's last right-clicked image/link (feeds the download menu items).
+    func updateContextTargets(img: String?, link: String?) {
+        guard let mwv = webView as? MuninnWebView else { return }
+        mwv.lastCtxImageURL = (img?.isEmpty == false) ? URL(string: img!) : nil
+        mwv.lastCtxLinkURL = (link?.isEmpty == false) ? URL(string: link!) : nil
+    }
+
+    /// Start a download that routes through our WKDownloadDelegate (so the Library records it).
+    func startDownload(_ url: URL) {
+        webView.startDownload(using: URLRequest(url: url)) { download in download.delegate = self }
+    }
+}
+
 extension InjectionCoordinator: WKDownloadDelegate {
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping @MainActor (URL?) -> Void) {
@@ -285,7 +331,17 @@ extension InjectionCoordinator: WKDownloadDelegate {
                 dest = folder.appendingPathComponent(candidate); n += 1
             } while FileManager.default.fileExists(atPath: dest.path)
         }
+        downloadInfo[ObjectIdentifier(download)] = (dest, response.url)
         completionHandler(dest)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        let key = ObjectIdentifier(download)
+        if let info = downloadInfo.removeValue(forKey: key) { onDownloadFinished?(info.dest, info.source) }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        downloadInfo.removeValue(forKey: ObjectIdentifier(download))
     }
 }
 
