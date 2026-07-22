@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController {
     private let sections: [(title: String, icon: String)] = [
         ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
         ("Calendars", "calendar"), ("Models", "cpu"), ("Obsidian", "book.closed"),
-        ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
+        ("Shields", "shield.lefthalf.filled"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
     private let vaultPathLabel = NSTextField(labelWithString: "")
     private let notesPathLabel = NSTextField(labelWithString: "")
@@ -101,7 +101,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, shieldsView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -742,6 +742,38 @@ final class SettingsWindowController: NSWindowController {
             }
         }
     }
+
+    // MARK: Shields
+
+    private func shieldsView() -> NSView {
+        let v = NSView()
+        let title = heading("Shields")
+        let hint = NSTextField(labelWithString: "Privacy protections applied to every site. Toggle Shields per-site from the shield in the address bar.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 2; hint.preferredMaxLayoutWidth = 620
+        let s = ShieldsManager.shared
+        let stack = formStack([
+            row("Block ads & trackers", makeSwitch(s.blockAds, #selector(shieldAds(_:)))),
+            row("Upgrade connections to HTTPS", makeSwitch(s.upgradeHTTPS, #selector(shieldHTTPS(_:)))),
+            row("Block cross-site cookies", makeSwitch(s.blockCookies, #selector(shieldCookies(_:)))),
+        ])
+        for x in [title, hint] { x.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(x) }
+        v.addSubview(stack)
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+        ])
+        return v
+    }
+    @objc private func shieldAds(_ s: NSSwitch) { ShieldsManager.shared.blockAds = (s.state == .on) }
+    @objc private func shieldHTTPS(_ s: NSSwitch) { ShieldsManager.shared.upgradeHTTPS = (s.state == .on) }
+    @objc private func shieldCookies(_ s: NSSwitch) { ShieldsManager.shared.blockCookies = (s.state == .on) }
 
     // MARK: Obsidian
 

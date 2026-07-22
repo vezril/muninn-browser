@@ -73,6 +73,8 @@ final class AppShell: NSObject {
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
     private let settingsButton = NSButton()
+    private let shieldButton = NSButton()
+    private let shields = ShieldsManager.shared
     private let sidebar = HoverView()
     private let tabStack = NSStackView()
     /// Slide offset of the sidebar (0 = shown, -sidebarWidth = tucked off-screen left).
@@ -195,6 +197,13 @@ final class AppShell: NSObject {
             }
         }
         startLiveCalendar()
+        // Shields: recompile on change → re-apply to all tabs + refresh the icon; compile now.
+        shields.onChange = { [weak self] in
+            guard let self else { return }
+            self.applyShieldsToAllTabs(); self.updateShieldIcon()
+        }
+        shields.rebuild()
+        updateShieldIcon()
         let env = ProcessInfo.processInfo.environment
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
@@ -256,6 +265,9 @@ final class AppShell: NSObject {
         }
         // Developer Mode: right-click "View Page Source" → a new tab showing the HTML.
         tab.injector.onViewSource = { [weak self] wv in self?.viewSource(of: wv) }
+        // Shields: per-site JavaScript decision + apply the content-rule list to this tab.
+        tab.injector.onDecideJavaScript = { url in ShieldsManager.shared.javaScriptAllowed(for: url) }
+        applyShields(to: tab)
         // Record finished downloads for the Library + play the "drop into Library" animation.
         tab.injector.onDownloadFinished = { [weak self] dest, source in
             self?.downloadStore.add(path: dest, source: source)
@@ -2043,6 +2055,34 @@ final class AppShell: NSObject {
         addressField.stringValue = activeWebView.url?.absoluteString ?? ""
         backButton.isEnabled = activeWebView.canGoBack
         forwardButton.isEnabled = activeWebView.canGoForward
+        updateShieldIcon()
+    }
+
+    // MARK: - Shields
+
+    private func applyShields(to tab: BrowserTab) {
+        let ucc = tab.webView.configuration.userContentController
+        ucc.removeAllContentRuleLists()
+        if let list = shields.ruleList { ucc.add(list) }
+    }
+    private func applyShieldsToAllTabs() { tabs.forEach { applyShields(to: $0) } }
+
+    private func updateShieldIcon() {
+        let up = shields.shieldsUp(for: activeWebView.url?.host)
+        shieldButton.image = NSImage(systemSymbolName: up ? "shield.lefthalf.filled" : "shield.slash", accessibilityDescription: "Shields")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+        shieldButton.contentTintColor = up ? .secondaryLabelColor : .systemOrange
+    }
+
+    @objc private func showShieldsPanel() {
+        let panel = ShieldsPanelController()
+        panel.host = activeWebView.url?.host
+        panel.onToggled = { [weak self] in self?.activeWebView.reload(); self?.updateShieldIcon() }
+        panel.onOpenSettings = { [weak self] in self?.openSettings() }
+        let pop = NSPopover()
+        pop.contentViewController = panel
+        pop.behavior = .transient
+        pop.show(relativeTo: shieldButton.bounds, of: shieldButton, preferredEdge: .maxY)
     }
 
     private func rebuildTabBar() {
@@ -2561,6 +2601,13 @@ final class AppShell: NSObject {
         libraryButton.toolTip = "Library — downloads & media"
         libraryButton.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(libraryButton)
+        // Shields button, left of the settings gear on the address row.
+        shieldButton.isBordered = false
+        shieldButton.contentTintColor = .secondaryLabelColor
+        shieldButton.target = self; shieldButton.action = #selector(showShieldsPanel)
+        shieldButton.toolTip = "Shields"
+        shieldButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(shieldButton)
         sidebar.addSubview(workspaceBar)
         sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
@@ -2569,7 +2616,10 @@ final class AppShell: NSObject {
             navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 88), // clear of the traffic lights
             addressField.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 10),
             addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            addressField.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -6),
+            addressField.trailingAnchor.constraint(equalTo: shieldButton.leadingAnchor, constant: -6),
+            shieldButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -4),
+            shieldButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            shieldButton.widthAnchor.constraint(equalToConstant: 22),
             settingsButton.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: Self.sidebarWidth - 8),
             settingsButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             settingsButton.widthAnchor.constraint(equalToConstant: 22),

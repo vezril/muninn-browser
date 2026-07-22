@@ -37,6 +37,8 @@ final class InjectionCoordinator: NSObject {
     var onViewSource: ((WKWebView) -> Void)?
     /// A finished download → recorded in the Library (destination, source URL).
     var onDownloadFinished: ((URL, URL?) -> Void)?
+    /// Shields: whether JavaScript is allowed for a navigation (per-site script blocking).
+    var onDecideJavaScript: ((URL?) -> Bool)?
     /// In-flight download → (destination, source) for recording on completion.
     private var downloadInfo: [ObjectIdentifier: (dest: URL, source: URL?)] = [:]
 
@@ -223,8 +225,10 @@ extension InjectionCoordinator: WKNavigationDelegate {
     /// blank out the subframes of a page that's still on screen. The main frame id
     /// stays 0; it re-registers on its next message.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        decisionHandler(onNavigationAction?(navigationAction) ?? .allow)
+                 preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        if let allow = onDecideJavaScript?(navigationAction.request.url) { preferences.allowsContentJavaScript = allow }
+        decisionHandler(onNavigationAction?(navigationAction) ?? .allow, preferences)
     }
 
     // Downloads — non-displayable responses (attachments, binaries) become downloads.
