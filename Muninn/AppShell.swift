@@ -1484,9 +1484,16 @@ final class AppShell: NSObject {
         showActiveWebView(); tab.load(url); rebuildTabBar()
     }
 
+    /// The URL to hand to others — cleaned of share trackers (YouTube `si`, TikTok `_t`, …) when the
+    /// setting is on. Applied to every copy/share path; never alters the page you're viewing.
+    private func shareURL(_ url: URL) -> URL {
+        ShieldsManager.shared.cleanSharedLinks ? ShareLinkCleaner.clean(url) : url
+    }
+
     /// Cmd+Shift+C — copy the active tab's URL.
     @objc private func copyActiveURL() {
-        guard let url = activeWebView.url ?? activeTab.currentURL else { return }
+        guard let raw = activeWebView.url ?? activeTab.currentURL else { return }
+        let url = shareURL(raw)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
         showToast("Link copied", share: [url])
@@ -1494,7 +1501,8 @@ final class AppShell: NSObject {
 
     /// Cmd+Shift+Option+C — copy the active tab's URL as a Markdown link.
     @objc private func copyActiveMarkdown() {
-        guard let url = activeWebView.url ?? activeTab.currentURL else { return }
+        guard let raw = activeWebView.url ?? activeTab.currentURL else { return }
+        let url = shareURL(raw)
         let title = activeTab.title.isEmpty ? url.absoluteString : activeTab.title
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("[\(title)](\(url.absoluteString))", forType: .string)
@@ -3507,8 +3515,8 @@ final class AppShell: NSObject {
 
     /// Open the macOS share sheet for the current page, anchored to the share button.
     @objc private func shareCurrentURL(_ sender: NSView) {
-        guard let url = activeWebView.url ?? activeTab.currentURL else { return }
-        let picker = NSSharingServicePicker(items: [url])
+        guard let raw = activeWebView.url ?? activeTab.currentURL else { return }
+        let picker = NSSharingServicePicker(items: [shareURL(raw)])
         picker.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
     }
 

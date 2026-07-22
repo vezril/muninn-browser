@@ -30,6 +30,9 @@ final class ShieldsManager {
     /// Cookie-consent notice blocking — injected script that rejects/hides banners. Privacy-
     /// preserving (declines non-essential; never auto-accepts). Read at tab creation.
     var blockCookieNotices: Bool { get { d.object(forKey: kCookie) as? Bool ?? true } set { d.set(newValue, forKey: kCookie) } }
+    /// Strip tracker/attribution params from links you copy or share (YouTube `si`, TikTok `_t`, …).
+    /// Applied by `ShareLinkCleaner` in the copy/share paths — never alters the page you're viewing.
+    var cleanSharedLinks: Bool { get { d.object(forKey: kShare) as? Bool ?? true } set { d.set(newValue, forKey: kShare) } }
 
     /// A random token generated once per app session (never persisted) — mixed with the site's
     /// eTLD+1 to seed farbling, so values are consistent within a session but differ across
@@ -120,6 +123,7 @@ final class ShieldsManager {
     private let kAds = "muninn.shields.ads", kHTTPS = "muninn.shields.https", kCookies = "muninn.shields.cookies"
     private let kStrip = "muninn.shields.strip", kFP = "muninn.shields.fp", kDebounce = "muninn.shields.debounce"
     private let kCookie = "muninn.shields.cookieNotices"
+    private let kShare = "muninn.shields.shareLinks"
     private let kDown = "muninn.shields.down", kScripts = "muninn.shields.scripts"
 
     private var shieldsDownList: Set<String> {
