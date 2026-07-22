@@ -1,0 +1,38 @@
+# shields Specification
+
+## Purpose
+TBD - created by archiving change shields. Update Purpose after archive.
+## Requirements
+### Requirement: Block ads, trackers, and harden connections by default
+The browser SHALL apply, on by default, ad/tracker blocking, HTTPS upgrade, and cross-site cookie
+blocking via content rules, globally toggleable in Settings → Shields.
+
+#### Scenario: trackers blocked
+- **WHEN** a page requests a known ad/tracker domain as a third party
+- **THEN** the request is blocked
+
+#### Scenario: https upgrade
+- **WHEN** a page or resource is requested over http and HTTPS upgrade is on
+- **THEN** it is upgraded to https
+
+#### Scenario: global toggle
+- **WHEN** a protection is turned off in Settings → Shields
+- **THEN** it stops applying (after the rule list recompiles) on all tabs
+
+### Requirement: Per-site Shields control
+A shield in the address row SHALL open a per-site panel to turn Shields on/off for the site and to
+block scripts for the site, showing which protections are active. Per-site state persists.
+
+#### Scenario: shields down for a site
+- **WHEN** the user turns Shields off for a site
+- **THEN** that site is exempt from all protections (icon shows a slashed shield) and the change
+  persists
+
+#### Scenario: block scripts for a site
+- **WHEN** the user enables "Block scripts on this site"
+- **THEN** JavaScript is disabled for that site's navigations
+
+#### Scenario: status readout (no count)
+- **WHEN** the panel is shown
+- **THEN** it lists the active protections (active/inactive), without a blocked-request count
+
