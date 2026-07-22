@@ -28,6 +28,10 @@ final class AppShell: NSObject {
     private let notificationsView = NotificationsView()
     private var quickLooks: [QuickLookWindow] = []
     private var nextQuickLookId = 0
+    private var taskManager: TaskManagerWindow?
+    /// Task Manager responsiveness tracking: which tabs answered a JS ping, and any outstanding ping.
+    private var tabResponsive: [Int: Bool] = [:]
+    private var tabPingPending: [Int: Date] = [:]
     private var peek: PeekOverlay?
     private var nextPeekId = 0
     private var previewPopover: NSPopover?
@@ -1863,6 +1867,7 @@ final class AppShell: NSObject {
             .init(id: "reload", title: "Reload", symbol: "arrow.clockwise", shortcut: sc(.reload)),
             .init(id: "copyURL", title: "Copy URL", symbol: "link", shortcut: sc(.copyURL)),
             .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
+            .init(id: "taskManager", title: "Task Manager", symbol: "gauge.with.dots.needle.bottom.50percent", shortcut: nil),
             .init(id: "askModel", title: "Ask Local Model…", symbol: "sparkles", shortcut: nil),
         ]
         if ObsidianSettings.isConfigured {
@@ -1883,6 +1888,67 @@ final class AppShell: NSObject {
         return cmds
     }
 
+    // MARK: - Task Manager
+
+    @objc func openTaskManager() {
+        let tm = taskManager ?? {
+            let w = TaskManagerWindow()
+            w.provider = { [weak self] in self?.taskManagerRows() ?? [] }
+            w.onSelect = { [weak self] id in self?.taskManagerSelect(id) }
+            w.onReload = { [weak self] id in self?.tabById(id)?.webView.reload() }
+            w.onClose = { [weak self] id in if let i = self?.tabIndex(id: id) { self?.closeTab(i) } }
+            self.taskManager = w
+            return w
+        }()
+        tm.present()
+    }
+
+    private func tabById(_ id: Int) -> BrowserTab? { tabs.first { $0.id == id } }
+
+    private func taskManagerSelect(_ id: Int) {
+        guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
+        if tabs[i].workspaceId != activeWorkspaceId, let wid = tabs[i].workspaceId { switchWorkspace(to: wid) }
+        if let j = tabs.firstIndex(where: { $0.id == id }) { selectTab(j) }
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Snapshot each loaded tab's WebContent process memory + responsiveness (sorted by memory).
+    private func taskManagerRows() -> [TaskManagerRow] {
+        pingTabsForTaskManager()
+        struct Live { let id: Int; let title: String; let fav: NSImage?; let pid: pid_t; let active: Bool; let ok: Bool }
+        let live: [Live] = tabs.compactMap { tab in
+            // Any tab with a running WebContent process (landing page, loaded URL, …) — not our
+            // lazy `isLoaded` flag, which is only set on URL navigation.
+            guard let pid = (tab.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0
+            else { return nil }
+            return Live(id: tab.id, title: tab.displayTitle, fav: tab.favicon, pid: pid,
+                        active: tab === activeTab, ok: tabResponsive[tab.id] ?? true)
+        }
+        let mem = ProcessMemory.residentMB(pids: live.map { $0.pid })
+        return live.map { l in
+            TaskManagerRow(tabId: l.id, title: l.title, favicon: l.fav, pid: l.pid,
+                           memoryMB: mem[l.pid] ?? 0, responsive: l.ok, isActive: l.active)
+        }.sorted { $0.memoryMB > $1.memoryMB }
+    }
+
+    /// Ping each loaded tab (trivial JS). If a ping stays outstanding > 4s, the tab is unresponsive.
+    private func pingTabsForTaskManager() {
+        let liveIds = Set(tabs.map { $0.id })
+        tabResponsive = tabResponsive.filter { liveIds.contains($0.key) }
+        tabPingPending = tabPingPending.filter { liveIds.contains($0.key) }
+        for tab in tabs {
+            if let sent = tabPingPending[tab.id] {
+                if Date().timeIntervalSince(sent) > 4 { tabResponsive[tab.id] = false }
+                continue // still awaiting the previous ping
+            }
+            tabPingPending[tab.id] = Date()
+            let id = tab.id
+            tab.webView.evaluateJavaScript("true") { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.tabResponsive[id] = true; self?.tabPingPending[id] = nil }
+            }
+        }
+    }
+
     private func runPaletteCommand(_ id: String) {
         if id.hasPrefix("space:"), let uuid = UUID(uuidString: String(id.dropFirst("space:".count))) {
             switchWorkspace(to: uuid); return
@@ -1899,6 +1965,7 @@ final class AppShell: NSObject {
         case "reload":        reload()
         case "copyURL":       copyActiveURL()
         case "settings":      openSettings()
+        case "taskManager":   openTaskManager()
         case "inspect":       inspectActiveTab()
         case "viewSource":    viewSource(of: activeWebView)
         case "askModel":      openAskModel()
