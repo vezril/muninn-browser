@@ -10,8 +10,11 @@ final class SettingsWindowController: NSWindowController {
     private var navButtons: [NSButton] = []
     private let sections: [(title: String, icon: String)] = [
         ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
-        ("Calendars", "calendar"), ("Models", "cpu"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
+        ("Calendars", "calendar"), ("Models", "cpu"), ("Obsidian", "book.closed"),
+        ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
+    private let vaultPathLabel = NSTextField(labelWithString: "")
+    private let notesPathLabel = NSTextField(labelWithString: "")
     private let routingList = NSStackView()
     private let calendarList = NSStackView()
     private let baseURLField = NSTextField()
@@ -98,7 +101,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -150,7 +153,14 @@ final class SettingsWindowController: NSWindowController {
     private func generalView() -> NSView {
         let v = NSView()
         let title = heading("General")
-        let stack = formStack([ row("Warn before quitting", makeSwitch(host?.settingsWarnBeforeQuitting ?? false, #selector(toggleWarnQuit(_:)))) ])
+        let retention = NSPopUpButton()
+        retention.addItems(withTitles: NotificationRetention.allCases.map { $0.displayName })
+        retention.selectItem(at: NotificationRetention.allCases.firstIndex(of: NotificationRetention.current) ?? 2)
+        retention.target = self; retention.action = #selector(retentionChanged(_:))
+        let stack = formStack([
+            row("Warn before quitting", makeSwitch(host?.settingsWarnBeforeQuitting ?? false, #selector(toggleWarnQuit(_:)))),
+            row("Keep notifications for", retention),
+        ])
         title.translatesAutoresizingMaskIntoConstraints = false
         v.addSubview(title); v.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -163,6 +173,10 @@ final class SettingsWindowController: NSWindowController {
         return v
     }
     @objc private func toggleWarnQuit(_ s: NSSwitch) { host?.settingsWarnBeforeQuitting = (s.state == .on) }
+    @objc private func retentionChanged(_ s: NSPopUpButton) {
+        guard s.indexOfSelectedItem < NotificationRetention.allCases.count else { return }
+        NotificationRetention.current = NotificationRetention.allCases[s.indexOfSelectedItem]
+    }
 
     // MARK: Profiles (list on top, settings below)
 
@@ -727,6 +741,74 @@ final class SettingsWindowController: NSWindowController {
                 }
             }
         }
+    }
+
+    // MARK: Obsidian
+
+    private func obsidianView() -> NSView {
+        let v = NSView()
+        let title = heading("Obsidian")
+        let hint = NSTextField(labelWithString: "Save pages as Markdown notes into your Obsidian vault. Then use ⌘N → “New Note from Page” or “Summarize Page → Obsidian Note”.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 2; hint.preferredMaxLayoutWidth = 620
+
+        vaultPathLabel.stringValue = ObsidianSettings.vaultPath.isEmpty ? "Not set" : ObsidianSettings.vaultPath
+        notesPathLabel.stringValue = ObsidianSettings.notesPath.isEmpty ? "Vault root" : ObsidianSettings.notesPath
+        let stack = formStack([
+            row("Vault location", pathControl(vaultPathLabel, #selector(chooseVault))),
+            row("New notes location", pathControl(notesPathLabel, #selector(chooseNotesFolder))),
+        ])
+        for s in [title, hint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        v.addSubview(stack)
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+        ])
+        return v
+    }
+
+    /// A path label (truncating middle) + a "Choose…" button.
+    private func pathControl(_ label: NSTextField, _ action: Selector) -> NSView {
+        label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingMiddle
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let btn = NSButton(title: "Choose…", target: self, action: action)
+        btn.bezelStyle = .rounded; btn.controlSize = .small; btn.translatesAutoresizingMaskIntoConstraints = false
+        let wrap = NSView()
+        wrap.addSubview(label); wrap.addSubview(btn)
+        NSLayoutConstraint.activate([
+            wrap.heightAnchor.constraint(equalToConstant: 22),
+            wrap.widthAnchor.constraint(equalToConstant: 360),
+            btn.trailingAnchor.constraint(equalTo: wrap.trailingAnchor),
+            btn.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: wrap.leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: btn.leadingAnchor, constant: -10),
+            label.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
+        ])
+        return wrap
+    }
+
+    private func chooseFolder() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+    @objc private func chooseVault() {
+        guard let url = chooseFolder() else { return }
+        ObsidianSettings.vaultPath = url.path
+        vaultPathLabel.stringValue = url.path
+    }
+    @objc private func chooseNotesFolder() {
+        guard let url = chooseFolder() else { return }
+        ObsidianSettings.notesPath = url.path
+        notesPathLabel.stringValue = url.path
     }
 
     // MARK: Advanced

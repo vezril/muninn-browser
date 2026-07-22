@@ -24,6 +24,8 @@ final class AppShell: NSObject {
     private var palette: CommandPalette?
     private let askChat = AskChatView()
     private var askTask: Task<Void, Never>?
+    private let notificationStore = NotificationStore()
+    private let notificationsView = NotificationsView()
     private var quickLooks: [QuickLookWindow] = []
     private var nextQuickLookId = 0
     private var peek: PeekOverlay?
@@ -187,7 +189,10 @@ final class AppShell: NSObject {
         installMouseMonitor()
         // Auto-Archive sweep every few minutes (also runs on each tab switch).
         archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.archiveStaleTabs() }
+            MainActor.assumeIsolated {
+                self?.archiveStaleTabs()
+                self?.pruneNotifications()
+            }
         }
         startLiveCalendar()
         let env = ProcessInfo.processInfo.environment
@@ -1401,7 +1406,8 @@ final class AppShell: NSObject {
 
     /// A small transient toast in the top-right, tinted to the current workspace, with an
     /// optional Share button (standard macOS share sheet: AirDrop, Mail, Messages, …).
-    private func showToast(_ message: String, share items: [Any] = []) {
+    private func showToast(_ message: String, share items: [Any] = [], record: Bool = true) {
+        if record { notificationStore.add(message) } // keep in the Notifications history
         guard let content = window.contentView else { return }
         currentToast?.removeFromSuperview()
         toastDismiss?.cancel()
@@ -1634,6 +1640,71 @@ final class AppShell: NSObject {
         persist()
     }
 
+    // MARK: - Obsidian
+
+    /// The active page's title, URL, and visible text (used by Ask context + Obsidian notes).
+    private func currentPageText(_ completion: @escaping (_ title: String, _ url: String, _ text: String) -> Void) {
+        let title = activeTab.title
+        let url = activeWebView.url?.absoluteString ?? ""
+        activeWebView.evaluateJavaScript("document.body ? document.body.innerText : ''") { result, _ in
+            completion(title, url, String((result as? String ?? "").prefix(12000)))
+        }
+    }
+
+    /// Create an Obsidian note from the current page (frontmatter + URL), then open it in Obsidian.
+    private func newNoteFromPage() {
+        guard ObsidianSettings.isConfigured, let folder = ObsidianSettings.notesFolder else {
+            showToast("Set your Obsidian vault in Settings → Obsidian"); return
+        }
+        let title = activeTab.title.isEmpty ? (activeWebView.url?.host ?? "Note") : activeTab.title
+        let url = activeWebView.url?.absoluteString ?? ""
+        do {
+            let file = try ObsidianNote.create(title: title, url: url, summary: nil, in: folder)
+            if let open = ObsidianNote.openURL(for: file) { NSWorkspace.shared.open(open) }
+            showToast("Note created in Obsidian")
+        } catch { showToast("Couldn't create the note") }
+    }
+
+    /// Summarize the current page with the local model and save it as an Obsidian note — fully
+    /// automatic (no chat UI); a toast confirms when the note is written.
+    private func summarizePageToNote() {
+        guard ObsidianSettings.isConfigured, let folder = ObsidianSettings.notesFolder else {
+            showToast("Set your Obsidian vault in Settings → Obsidian"); return
+        }
+        let model = OllamaSettings.defaultModel
+        guard !model.isEmpty, let base = OllamaSettings.baseURLValue else {
+            showToast("Configure a local model in Settings → Models"); return
+        }
+        showToast("Summarizing page…", record: false) // progress, not a kept notification
+        currentPageText { [weak self] title, url, text in
+            guard let self else { return }
+            let prompt = """
+            Summarize the web page below into a concise Markdown note: start with a one-line **TL;DR**, \
+            then 3–6 key bullet points. Output only the summary — do not repeat the raw text.
+
+            Title: \(title)
+            URL: \(url)
+
+            \(text)
+            """
+            let client = OllamaClient(baseURL: base)
+            self.askTask?.cancel()
+            self.askTask = Task { @MainActor in
+                var summary = ""
+                do {
+                    for try await token in client.generateStream(model: model, prompt: prompt) { summary += token }
+                } catch {
+                    self.showToast("Summary failed — is Ollama running?"); return
+                }
+                do {
+                    let file = try ObsidianNote.create(title: title, url: url, summary: summary, in: folder)
+                    if let open = ObsidianNote.openURL(for: file) { NSWorkspace.shared.open(open) }
+                    self.showToast("Summary note created in Obsidian")
+                } catch { self.showToast("Couldn't create the note") }
+            }
+        }
+    }
+
     // MARK: - Quick Look (Little Muninn)
 
     /// Open a compact, ephemeral Quick Look window (Cmd+Option+N, or an external link when
@@ -1704,6 +1775,12 @@ final class AppShell: NSObject {
             .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
             .init(id: "askModel", title: "Ask Local Model…", symbol: "sparkles", shortcut: nil),
         ]
+        if ObsidianSettings.isConfigured {
+            cmds.append(.init(id: "newNote", title: "New Note from Page (Obsidian)", symbol: "square.and.pencil", shortcut: nil))
+            if !OllamaSettings.defaultModel.isEmpty {
+                cmds.append(.init(id: "summarizeNote", title: "Summarize Page → Obsidian Note", symbol: "text.append", shortcut: nil))
+            }
+        }
         // Switch Space — one entry per workspace (all but the active one).
         for ws in workspaces where ws.id != activeWorkspaceId {
             let label = [ws.icon, ws.name].compactMap { $0 }.joined(separator: " ")
@@ -1735,6 +1812,8 @@ final class AppShell: NSObject {
         case "inspect":       inspectActiveTab()
         case "viewSource":    viewSource(of: activeWebView)
         case "askModel":      openAskModel()
+        case "newNote":       newNoteFromPage()
+        case "summarizeNote": summarizePageToNote()
         default:              break
         }
     }
@@ -2584,21 +2663,29 @@ final class AppShell: NSObject {
         }
         askChat.fetchPageContext = { [weak self] completion in
             guard let self else { completion(nil); return }
-            let title = self.activeTab.title
-            let url = self.activeWebView.url?.absoluteString ?? ""
-            self.activeWebView.evaluateJavaScript("document.body ? document.body.innerText : ''") { result, _ in
-                let text = String((result as? String ?? "").prefix(12000)) // ~cap the context size
-                completion(.init(title: title, url: url, text: text))
-            }
+            self.currentPageText { title, url, text in completion(.init(title: title, url: url, text: text)) }
         }
+        notificationsView.onClear = { [weak self] in self?.notificationStore.clear() }
+        notificationStore.onChange = { [weak self] in
+            guard let self else { return }
+            self.notificationsView.reload(self.notificationStore.items)
+        }
+        notificationsView.reload(notificationStore.items)
         rebuildTools()
     }
 
-    /// Register the Tools-sidebar tools (Calendar + Ask). Keeps the current selection.
+    /// Drop expired notifications and refresh the view.
+    private func pruneNotifications() {
+        notificationStore.prune()
+        notificationsView.reload(notificationStore.items)
+    }
+
+    /// Register the Tools-sidebar tools (Calendar / Ask / Notifications). Keeps the selection.
     private func rebuildTools() {
         toolsSidebar.setTools([
             .init(id: "calendar", title: "Calendar", symbol: "calendar", view: liveWidget),
             .init(id: "ask", title: "Ask", symbol: "sparkles", view: askChat),
+            .init(id: "notifications", title: "Notifications", symbol: "bell", view: notificationsView),
         ])
     }
 
