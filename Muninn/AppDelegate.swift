@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func newQuickLook() { shell?.openQuickLook(nil) }
+    @objc private func openTaskManager() { shell?.openTaskManager() }
 
     @objc private func setAsDefaultBrowser() {
         let bundleURL = Bundle.main.bundleURL
@@ -114,6 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         // (no key equivalent — the remappable shortcut is handled by AppShell's key monitor)
         fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "").target = self
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "").target = self
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
