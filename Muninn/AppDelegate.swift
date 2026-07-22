@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newQuickLook() { shell?.openQuickLook(nil) }
     @objc private func openTaskManager() { shell?.openTaskManager() }
+    @objc private func translatePage() { shell?.translateButtonClicked() }
 
     @objc private func setAsDefaultBrowser() {
         let bundleURL = Bundle.main.bundleURL
@@ -117,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "").target = self
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Translate Page", action: #selector(translatePage), keyEquivalent: "").target = self
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
