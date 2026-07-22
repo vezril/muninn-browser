@@ -6,6 +6,10 @@ import AppKit
 final class AskChatView: NSView {
     /// Runs a chat turn: given the full message history, stream tokens then finish (nil = ok).
     var runChat: (([ChatMessage], _ onToken: @escaping (String) -> Void, _ onDone: @escaping (Error?) -> Void) -> Void)?
+    /// The current page's context (title/url/visible text), when the page toggle is on.
+    struct PageContext { let title: String; let url: String; let text: String }
+    var fetchPageContext: ((@escaping (PageContext?) -> Void) -> Void)?
+    private var includePage = false
 
     private let store = ChatStore()
     private var sessions: [ChatSession] = []
@@ -15,6 +19,7 @@ final class AskChatView: NSView {
     private let messagesStack = NSStackView()
     private let scroll = NSScrollView()
     private let input = NSTextField()
+    private let pageToggle = NSButton()
     private var streamingLabel: NSTextField?   // the assistant bubble being streamed into
     private var isStreaming = false
     private var typingTimer: Timer?
@@ -59,7 +64,19 @@ final class AskChatView: NSView {
         input.delegate = self
         input.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(bar); addSubview(scroll); addSubview(input)
+        // Page-context toggle, left of the input.
+        pageToggle.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: "Include page")
+        pageToggle.isBordered = false
+        pageToggle.contentTintColor = .secondaryLabelColor
+        pageToggle.toolTip = "Include the current page as context"
+        pageToggle.target = self; pageToggle.action = #selector(togglePage)
+        pageToggle.translatesAutoresizingMaskIntoConstraints = false
+        pageToggle.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        let inputRow = NSStackView(views: [pageToggle, input])
+        inputRow.orientation = .horizontal; inputRow.spacing = 4
+        inputRow.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(bar); addSubview(scroll); addSubview(inputRow)
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
@@ -69,10 +86,10 @@ final class AskChatView: NSView {
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
 
-            input.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
-            input.leadingAnchor.constraint(equalTo: leadingAnchor),
-            input.trailingAnchor.constraint(equalTo: trailingAnchor),
-            input.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            inputRow.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
+            inputRow.leadingAnchor.constraint(equalTo: leadingAnchor),
+            inputRow.trailingAnchor.constraint(equalTo: trailingAnchor),
+            inputRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
 
             messagesStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             messagesStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 4),
@@ -200,12 +217,42 @@ final class AskChatView: NSView {
 
         isStreaming = true
         startTyping()
-        let history = sessions[current].messages.dropLast() // exclude the empty assistant placeholder
-        runChat?(Array(history), { [weak self] token in
-            self?.appendToken(token)
-        }, { [weak self] error in
-            self?.finishStream(error)
-        })
+        let history = Array(sessions[current].messages.dropLast()) // exclude the empty assistant placeholder
+
+        // With the page toggle on, fetch the current page and prepend it as a system message.
+        if includePage, let fetch = fetchPageContext {
+            fetch { [weak self] ctx in
+                guard let self else { return }
+                var payload = history
+                if let ctx, !ctx.text.isEmpty {
+                    payload.insert(ChatMessage(role: .system, text: Self.pageSystemPrompt(ctx)), at: 0)
+                }
+                self.stream(payload)
+            }
+        } else {
+            stream(history)
+        }
+    }
+
+    private func stream(_ payload: [ChatMessage]) {
+        runChat?(payload, { [weak self] token in self?.appendToken(token) },
+                          { [weak self] error in self?.finishStream(error) })
+    }
+
+    private static func pageSystemPrompt(_ ctx: PageContext) -> String {
+        """
+        The user is viewing this web page. Use its content to answer their question.
+
+        Title: \(ctx.title)
+        URL: \(ctx.url)
+
+        \(ctx.text)
+        """
+    }
+
+    @objc private func togglePage() {
+        includePage.toggle()
+        pageToggle.contentTintColor = includePage ? .controlAccentColor : .secondaryLabelColor
     }
 
     /// Animate "." → ".." → "..." in the pending assistant bubble until the first token.

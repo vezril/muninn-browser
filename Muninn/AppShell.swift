@@ -2504,6 +2504,15 @@ final class AppShell: NSObject {
         askChat.runChat = { [weak self] messages, onToken, onDone in
             self?.runChatTurn(messages, onToken: onToken, onDone: onDone)
         }
+        askChat.fetchPageContext = { [weak self] completion in
+            guard let self else { completion(nil); return }
+            let title = self.activeTab.title
+            let url = self.activeWebView.url?.absoluteString ?? ""
+            self.activeWebView.evaluateJavaScript("document.body ? document.body.innerText : ''") { result, _ in
+                let text = String((result as? String ?? "").prefix(12000)) // ~cap the context size
+                completion(.init(title: title, url: url, text: text))
+            }
+        }
         rebuildTools()
     }
 
