@@ -30,7 +30,7 @@ final class SettingsWindowController: NSWindowController {
 
     init(host: AppShell) {
         self.host = host
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 520),
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 520),
                            styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         win.title = "Settings"
         win.isReleasedWhenClosed = false
@@ -68,7 +68,7 @@ final class SettingsWindowController: NSWindowController {
             b.wantsLayer = true
             b.layer?.cornerRadius = 7
             b.translatesAutoresizingMaskIntoConstraints = false
-            b.widthAnchor.constraint(equalToConstant: 74).isActive = true
+            b.widthAnchor.constraint(equalToConstant: 72).isActive = true
             b.heightAnchor.constraint(equalToConstant: 52).isActive = true
             navButtons.append(b)
             navStack.addArrangedSubview(b)

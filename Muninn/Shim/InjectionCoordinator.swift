@@ -39,6 +39,8 @@ final class InjectionCoordinator: NSObject {
     var onDownloadFinished: ((URL, URL?) -> Void)?
     /// Shields: whether JavaScript is allowed for a navigation (per-site script blocking).
     var onDecideJavaScript: ((URL?) -> Bool)?
+    /// Middle-click on a link → open it in a (background) new tab.
+    var onMiddleClickLink: ((URL) -> Void)?
     /// In-flight download → (destination, source) for recording on completion.
     private var downloadInfo: [ObjectIdentifier: (dest: URL, source: URL?)] = [:]
 
@@ -155,6 +157,23 @@ final class InjectionCoordinator: NSObject {
         """
         addUserScript(ctxScript, at: .atDocumentStart, world: .page, allFrames: true)
         config.userContentController.add(ContextMenuHandler(injector: self), contentWorld: .page, name: "muninnCtx")
+
+        // Middle-click on a link → open it in a new tab (MAIN world; `auxclick` fires for the
+        // middle button). Resolve the anchor's absolute href and hand it to the shell.
+        let midClickScript = """
+        document.addEventListener('auxclick', function(e){ try {
+          if (e.button !== 1) return;
+          var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+          if (!a) return;
+          var href = a.href || '';
+          if (!/^https?:/i.test(href)) return;
+          e.preventDefault(); e.stopPropagation();
+          if (window.webkit && webkit.messageHandlers && webkit.messageHandlers.muninnMiddleClick)
+            webkit.messageHandlers.muninnMiddleClick.postMessage(href);
+        } catch (_) {} }, true);
+        """
+        addUserScript(midClickScript, at: .atDocumentStart, world: .page, allFrames: true)
+        config.userContentController.add(MiddleClickHandler(injector: self), contentWorld: .page, name: "muninnMiddleClick")
 
         configHook?(config)
         let mwv = MuninnWebView(frame: .zero, configuration: config)
@@ -313,6 +332,17 @@ private final class ContextMenuHandler: NSObject, WKScriptMessageHandler {
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
         let body = message.body as? [String: Any]
         injector?.updateContextTargets(img: body?["img"] as? String, link: body?["link"] as? String)
+    }
+}
+
+/// Middle-click on a link → open its URL in a new tab (via the shell).
+@MainActor
+private final class MiddleClickHandler: NSObject, WKScriptMessageHandler {
+    weak var injector: InjectionCoordinator?
+    init(injector: InjectionCoordinator) { self.injector = injector }
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let href = message.body as? String, let url = URL(string: href) else { return }
+        injector?.onMiddleClickLink?(url)
     }
 }
 

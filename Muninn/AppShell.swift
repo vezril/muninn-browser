@@ -69,11 +69,12 @@ final class AppShell: NSObject {
 
     // Chrome
     private let addressField = NSTextField()
-    private let backButton = NSButton()
-    private let forwardButton = NSButton()
-    private let reloadButton = NSButton()
-    private let settingsButton = NSButton()
-    private let shieldButton = NSButton()
+    private let backButton = HoverIconButton()
+    private let forwardButton = HoverIconButton()
+    private let reloadButton = HoverIconButton()
+    private let settingsButton = HoverIconButton()
+    private let shieldButton = HoverIconButton()
+    private let shareButton = HoverIconButton()
     /// Browser extensions: the controller delegate (maps Muninn tabs/windows) + the toolbar of
     /// per-extension action buttons under the address field.
     let extensionBridge = ExtensionBridge()
@@ -90,14 +91,20 @@ final class AppShell: NSObject {
     private var webLeadingFull: NSLayoutConstraint!
     private var sidebarOpen = true  // pinned-open
     private var peeking = false     // temporarily revealed by hovering the left edge
-    private let toggleButton = NSButton()
+    private let toggleButton = HoverIconButton()
     // Right-side Tools sidebar (hosts the Live Calendar).
     private let toolsSidebar = ToolsSidebar()
-    private let toolsButton = NSButton()
+    private let toolsButton = HoverIconButton()
     private var toolsOpen = false
     private var webTrailingCollapsed: NSLayoutConstraint!
     private var webTrailingWithTools: NSLayoutConstraint!
-    private static let toolsWidth: CGFloat = 280
+    private static let defaultToolsWidth: CGFloat = 280
+    /// User-resizable pane widths (persisted). Clamped to sensible bounds.
+    private var toolsWidth: CGFloat = 280
+    private var toolsWidthConstraint: NSLayoutConstraint!
+    private static let toolsWidthRange: ClosedRange<CGFloat> = 220...520
+    private let sidebarSplitter = SplitterHandle()
+    private let toolsSplitter = SplitterHandle()
     // Live Calendar (first Tools-sidebar tool).
     private var liveCalendars: [LiveCalendar] = []
     private let calendarFeed = CalendarFeed()
@@ -106,7 +113,11 @@ final class AppShell: NSObject {
     private var calendarTick: Timer?
     private var mouseMonitor: Any?
     private var archiveTimer: Timer?
-    private static let sidebarWidth: CGFloat = 230
+    private static let defaultSidebarWidth: CGFloat = 284
+    /// User-resizable left-sidebar width (persisted). Clamped to sensible bounds.
+    private var sidebarWidth: CGFloat = 284
+    private var sidebarWidthConstraint: NSLayoutConstraint!
+    private static let sidebarWidthRange: ClosedRange<CGFloat> = 248...460
     private static let topInset: CGFloat = 30 // clears the traffic-light strip (full-size content)
     private static let webCardInset: CGFloat = 8 // margin around the floating web card
     private static let webCardTopInset: CGFloat = 34 // clears the transparent title bar
@@ -147,6 +158,9 @@ final class AppShell: NSObject {
         let profileIds = Set(profiles.map { $0.id })
         routingRules = saved.routingRules
         liveCalendars = saved.liveCalendars
+        // Restore user-resized pane widths (clamped), else use the defaults.
+        sidebarWidth = saved.sidebarWidth.map { min(max(CGFloat($0), Self.sidebarWidthRange.lowerBound), Self.sidebarWidthRange.upperBound) } ?? Self.defaultSidebarWidth
+        toolsWidth = saved.toolsWidth.map { min(max(CGFloat($0), Self.toolsWidthRange.lowerBound), Self.toolsWidthRange.upperBound) } ?? Self.defaultToolsWidth
 
         // Folders — assign any pre-workspaces folder to the default workspace.
         folders = saved.folders.map { var f = $0; if f.workspaceId == nil { f.workspaceId = defaultWs }; return f }
@@ -277,6 +291,8 @@ final class AppShell: NSObject {
         }
         // Developer Mode: right-click "View Page Source" → a new tab showing the HTML.
         tab.injector.onViewSource = { [weak self] wv in self?.viewSource(of: wv) }
+        // Middle-click a link → open it in a background tab (current tab stays put).
+        tab.injector.onMiddleClickLink = { [weak self] url in self?.openInBackgroundTab(url) }
         // Shields: per-site JavaScript decision + apply the content-rule list to this tab.
         tab.injector.onDecideJavaScript = { url in ShieldsManager.shared.javaScriptAllowed(for: url) }
         applyShields(to: tab)
@@ -511,6 +527,7 @@ final class AppShell: NSObject {
         showActiveWebView()
         rebuildTabBar()
         loadLanding(activeTab)
+        animateTabOpen()
         window.makeFirstResponder(addressField)
     }
 
@@ -651,7 +668,9 @@ final class AppShell: NSObject {
                                 profiles: profiles,
                                 routingRules: routingRules,
                                 toolsSidebarOpen: toolsOpen,
-                                liveCalendars: liveCalendars))
+                                liveCalendars: liveCalendars,
+                                sidebarWidth: Double(sidebarWidth),
+                                toolsWidth: Double(toolsWidth)))
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
@@ -1970,8 +1989,9 @@ final class AppShell: NSObject {
         let proxy = extensionBridge.proxy(for: activeTab)
         for context in ExtensionManager.shared.loadedContexts {
             guard let action = context.action(for: proxy) else { continue }
-            let b = NSButton()
+            let b = HoverIconButton()
             b.isBordered = false
+            b.restingTint = .labelColor
             b.translatesAutoresizingMaskIntoConstraints = false
             b.imagePosition = .imageOnly
             b.image = action.icon(for: CGSize(width: 16, height: 16))
@@ -1979,8 +1999,8 @@ final class AppShell: NSObject {
             let name = context.webExtension.displayName ?? "Extension"
             b.toolTip = action.label.isEmpty ? name : action.label
             b.target = self; b.action = #selector(extensionActionClicked(_:))
-            b.widthAnchor.constraint(equalToConstant: 22).isActive = true
-            b.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            b.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 24).isActive = true
             extActionButtons[b] = context
             extensionBar.addArrangedSubview(b)
         }
@@ -2158,7 +2178,9 @@ final class AppShell: NSObject {
         let up = shields.shieldsUp(for: activeWebView.url?.host)
         shieldButton.image = NSImage(systemSymbolName: up ? "shield.lefthalf.filled" : "shield.slash", accessibilityDescription: "Shields")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
-        shieldButton.contentTintColor = up ? .secondaryLabelColor : .systemOrange
+        let tint: NSColor = up ? .secondaryLabelColor : .systemOrange
+        shieldButton.restingTint = tint          // survives hover-exit
+        shieldButton.contentTintColor = tint
     }
 
     @objc private func showShieldsPanel() {
@@ -2227,7 +2249,7 @@ final class AppShell: NSObject {
         group.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(isActiveGroup ? 0.7 : 0.3).cgColor
         group.layer?.backgroundColor = (isActiveGroup ? NSColor.controlAccentColor.withAlphaComponent(0.12) : .clear).cgColor
         group.translatesAutoresizingMaskIntoConstraints = false
-        group.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        group.widthAnchor.constraint(equalToConstant: sidebarWidth - 16).isActive = true
         group.heightAnchor.constraint(equalToConstant: 34).isActive = true
 
         let row = NSStackView()
@@ -2309,7 +2331,7 @@ final class AppShell: NSObject {
         c.translatesAutoresizingMaskIntoConstraints = false
         c.addSubview(chip)
         NSLayoutConstraint.activate([
-            c.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+            c.widthAnchor.constraint(equalToConstant: sidebarWidth - 16),
             chip.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: inset),
             chip.topAnchor.constraint(equalTo: c.topAnchor),
             chip.bottomAnchor.constraint(equalTo: c.bottomAnchor),
@@ -2341,7 +2363,7 @@ final class AppShell: NSObject {
         row.layer?.cornerRadius = 7
         row.layer?.backgroundColor = bg.cgColor
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        row.widthAnchor.constraint(equalToConstant: sidebarWidth - 16).isActive = true
         row.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
         let chevron = NSImageView(image: NSImage(systemSymbolName: folder.collapsed ? "chevron.right" : "chevron.down",
@@ -2391,7 +2413,7 @@ final class AppShell: NSObject {
         }
         row.dropSupportsOnto = false
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        row.widthAnchor.constraint(equalToConstant: sidebarWidth - 16).isActive = true
         row.heightAnchor.constraint(equalToConstant: 30).isActive = true
 
         let plus = NSButton(title: " New Tab",
@@ -2417,7 +2439,7 @@ final class AppShell: NSObject {
     private func separatorLine(showClear: Bool) -> NSView {
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16).isActive = true
+        row.widthAnchor.constraint(equalToConstant: sidebarWidth - 16).isActive = true
         row.heightAnchor.constraint(equalToConstant: 16).isActive = true
 
         let box = NSBox()
@@ -2538,7 +2560,7 @@ final class AppShell: NSObject {
             : NSColor.clear.cgColor
         chip.translatesAutoresizingMaskIntoConstraints = false
         let inset: CGFloat = indented ? 16 : 0
-        chip.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16 - inset).isActive = true
+        chip.widthAnchor.constraint(equalToConstant: sidebarWidth - 16 - inset).isActive = true
         chip.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         // Favicon (or a globe placeholder) in front of the title.
@@ -2637,14 +2659,46 @@ final class AppShell: NSObject {
         addressField.delegate = self // inline history autocomplete
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.font = .systemFont(ofSize: 13)
+        // Force single line: no wrapping, clip long URLs, scroll horizontally while editing.
+        addressField.usesSingleLineMode = true
+        addressField.maximumNumberOfLines = 1
+        addressField.lineBreakMode = .byTruncatingTail
+        addressField.cell?.wraps = false
+        addressField.cell?.isScrollable = true
 
-        // Nav cluster — top of the sidebar, under the window buttons.
-        let navRow = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton])
-        navRow.orientation = .horizontal
-        navRow.spacing = 4
-        navRow.translatesAutoresizingMaskIntoConstraints = false
+        // Share button — inside the URL box, opens the macOS share sheet for the current page.
+        configureIconButton(shareButton, symbol: "square.and.arrow.up",
+                            action: #selector(shareCurrentURL(_:)), tip: "Share…")
 
-        // Left sidebar: nav row + vertical tab list, collapsible.
+        // Shields + Settings — their own cluster, right of the nav cluster (divider between).
+        configureIconButton(shieldButton, symbol: "shield.lefthalf.filled",
+                            action: #selector(showShieldsPanel), tip: "Shields")
+        configureIconButton(settingsButton, symbol: "gearshape",
+                            action: #selector(showSettingsMenu(_:)), tip: "Settings")
+
+        // Browser-extension action buttons — inline in the top-bar cluster (rightmost, so extra
+        // extensions clip before the fixed controls if the sidebar is narrow).
+        extensionBar.orientation = .horizontal
+        extensionBar.spacing = 2
+        extensionBar.alignment = .centerY
+        extensionBar.translatesAutoresizingMaskIntoConstraints = false
+
+        // Vertical divider separating the nav cluster from the shield/settings/extensions cluster.
+        let toolbarDivider = NSBox(); toolbarDivider.boxType = .separator
+        toolbarDivider.translatesAutoresizingMaskIntoConstraints = false
+
+        // Top bar: [toggle back forward reload | shield settings <ext…>]
+        let topBar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton,
+                                         toolbarDivider, shieldButton, settingsButton, extensionBar])
+        topBar.orientation = .horizontal
+        topBar.spacing = 2
+        topBar.alignment = .centerY
+        topBar.setCustomSpacing(7, after: reloadButton)   // breathing room around the divider
+        topBar.setCustomSpacing(7, after: toolbarDivider)
+        topBar.setHuggingPriority(.required, for: .horizontal) // size to content, never compress
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+
+        // Left sidebar: top bar + address field + vertical tab list, collapsible.
         sidebar.wantsLayer = true
         sidebar.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
         sidebar.layer?.masksToBounds = true
@@ -2666,69 +2720,42 @@ final class AppShell: NSObject {
         workspaceHoverLabel.isHidden = true
         workspaceHoverLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Settings gear, right of the URL bar.
-        settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
-        settingsButton.isBordered = false
-        settingsButton.contentTintColor = .secondaryLabelColor
-        settingsButton.target = self
-        settingsButton.action = #selector(showSettingsMenu(_:))
-        settingsButton.toolTip = "Settings"
-        settingsButton.translatesAutoresizingMaskIntoConstraints = false
-
-        sidebar.addSubview(navRow)
-        sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under nav
-        sidebar.addSubview(settingsButton)
+        sidebar.addSubview(topBar)
+        sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under the top bar
+        sidebar.addSubview(shareButton)  // inside the URL box, right edge
         // Library button — bottom-left, beside the workspace switcher.
         libraryButton.image = NSImage(systemSymbolName: "books.vertical", accessibilityDescription: "Library")?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
         libraryButton.isBordered = false
+        libraryButton.restingTint = .secondaryLabelColor
         libraryButton.contentTintColor = .secondaryLabelColor
         libraryButton.target = self; libraryButton.action = #selector(openLibrary)
         libraryButton.toolTip = "Library — downloads & media"
         libraryButton.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(libraryButton)
-        // Shields button, left of the settings gear on the address row.
-        shieldButton.isBordered = false
-        shieldButton.contentTintColor = .secondaryLabelColor
-        shieldButton.target = self; shieldButton.action = #selector(showShieldsPanel)
-        shieldButton.toolTip = "Shields"
-        shieldButton.translatesAutoresizingMaskIntoConstraints = false
-        sidebar.addSubview(shieldButton)
-        // Browser-extension action buttons — a thin row under the address field.
-        extensionBar.orientation = .horizontal
-        extensionBar.spacing = 2
-        extensionBar.alignment = .centerY
-        extensionBar.translatesAutoresizingMaskIntoConstraints = false
-        sidebar.addSubview(extensionBar)
         sidebar.addSubview(workspaceBar)
         sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
         NSLayoutConstraint.activate([
-            navRow.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 6),
-            navRow.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 88), // clear of the traffic lights
-            addressField.topAnchor.constraint(equalTo: navRow.bottomAnchor, constant: 10),
+            toolbarDivider.heightAnchor.constraint(equalToConstant: 18),
+            topBar.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 6),
+            topBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 80), // clear of the traffic lights
+            // no trailing constraint: the bar keeps its intrinsic size (never compresses/overlaps)
+            addressField.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 10),
             addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            addressField.trailingAnchor.constraint(equalTo: shieldButton.leadingAnchor, constant: -6),
-            shieldButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -4),
-            shieldButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
-            shieldButton.widthAnchor.constraint(equalToConstant: 22),
-            settingsButton.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: Self.sidebarWidth - 8),
-            settingsButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
-            settingsButton.widthAnchor.constraint(equalToConstant: 22),
-            extensionBar.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
-            extensionBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            extensionBar.trailingAnchor.constraint(lessThanOrEqualTo: settingsButton.trailingAnchor),
-            tabStack.topAnchor.constraint(equalTo: extensionBar.bottomAnchor, constant: 8),
+            addressField.trailingAnchor.constraint(equalTo: shareButton.leadingAnchor, constant: -4),
+            shareButton.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -8),
+            shareButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
+            tabStack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -8),
             libraryButton.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             libraryButton.centerYAnchor.constraint(equalTo: workspaceBar.centerYAnchor),
             libraryButton.widthAnchor.constraint(equalToConstant: 28),
             libraryButton.heightAnchor.constraint(equalToConstant: 28),
             workspaceBar.leadingAnchor.constraint(equalTo: libraryButton.trailingAnchor, constant: 8),
             workspaceBar.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
-            workspaceBar.widthAnchor.constraint(lessThanOrEqualToConstant: Self.sidebarWidth - 42),
+            workspaceBar.trailingAnchor.constraint(lessThanOrEqualTo: sidebar.trailingAnchor, constant: -12),
             workspaceHoverLabel.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
             workspaceHoverLabel.trailingAnchor.constraint(lessThanOrEqualTo: sidebar.trailingAnchor, constant: -8),
             workspaceHoverLabel.bottomAnchor.constraint(equalTo: workspaceBar.topAnchor, constant: -5),
@@ -2771,6 +2798,8 @@ final class AppShell: NSObject {
         content.addSubview(toolsSidebar)   // right edge, behind the web card's shadow
         content.addSubview(sidebar)        // above the web card
         content.addSubview(toolsButton)
+        content.addSubview(sidebarSplitter) // draggable resize handles on the pane edges
+        content.addSubview(toolsSplitter)
         window.contentView = content
 
         sidebarLeadingConstraint = sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 0)
@@ -2779,10 +2808,12 @@ final class AppShell: NSObject {
         // Web card right edge: window edge (tools hidden) vs the tools sidebar (tools shown).
         webTrailingCollapsed = webContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -Self.webCardInset)
         webTrailingWithTools = webContainer.trailingAnchor.constraint(equalTo: toolsSidebar.leadingAnchor, constant: -Self.webCardInset)
+        sidebarWidthConstraint = sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth)
+        toolsWidthConstraint = toolsSidebar.widthAnchor.constraint(equalToConstant: toolsWidth)
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: Self.sidebarWidth),
+            sidebarWidthConstraint,
             sidebarLeadingConstraint,
             webContainer.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.webCardTopInset),
             webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -Self.webCardInset),
@@ -2791,9 +2822,28 @@ final class AppShell: NSObject {
             toolsSidebar.topAnchor.constraint(equalTo: content.topAnchor),
             toolsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             toolsSidebar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            toolsSidebar.widthAnchor.constraint(equalToConstant: Self.toolsWidth),
+            toolsWidthConstraint,
             toolsButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 6),
             toolsButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
+        ])
+
+        // Resize handles: a thin draggable strip centred on each pane's inner edge.
+        sidebarSplitter.translatesAutoresizingMaskIntoConstraints = false
+        toolsSplitter.translatesAutoresizingMaskIntoConstraints = false
+        sidebarSplitter.onDrag = { [weak self] dx in self?.resizeSidebar(by: dx) }
+        sidebarSplitter.onDragEnd = { [weak self] in self?.rebuildTabBar(); self?.persist() }
+        toolsSplitter.onDrag = { [weak self] dx in self?.resizeTools(by: -dx) }
+        toolsSplitter.onDragEnd = { [weak self] in self?.persist() }
+        toolsSplitter.isHidden = true   // tools sidebar starts hidden
+        NSLayoutConstraint.activate([
+            sidebarSplitter.topAnchor.constraint(equalTo: content.topAnchor),
+            sidebarSplitter.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            sidebarSplitter.centerXAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            sidebarSplitter.widthAnchor.constraint(equalToConstant: 8),
+            toolsSplitter.topAnchor.constraint(equalTo: content.topAnchor),
+            toolsSplitter.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            toolsSplitter.centerXAnchor.constraint(equalTo: toolsSidebar.leadingAnchor),
+            toolsSplitter.widthAnchor.constraint(equalToConstant: 8),
         ])
         // Peek: leaving the floating sidebar slides it back (only while collapsed).
         sidebar.onExited = { [weak self] in self?.closePeek() }
@@ -2885,8 +2935,10 @@ final class AppShell: NSObject {
     private func installMouseMonitor() {
         guard mouseMonitor == nil else { return }
         window.acceptsMouseMovedEvents = true
-        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] e in
-            self?.handleMouseMoved(e); return e
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .otherMouseDown]) { [weak self] e in
+            guard let self else { return e }
+            if e.type == .mouseMoved { self.handleMouseMoved(e); return e }
+            return self.handleOtherMouse(e)
         }
     }
 
@@ -2895,6 +2947,57 @@ final class AppShell: NSObject {
         guard !sidebarOpen, !peeking, let content = window.contentView else { return }
         let x = content.convert(e.locationInWindow, from: nil).x
         if x <= 4 { openPeek() }
+    }
+
+    /// Mouse extra buttons: side buttons 3/4 → back/forward on the active tab; middle-click (2) on
+    /// the back/forward/reload buttons → perform that action in a new tab, keeping the current one.
+    private func handleOtherMouse(_ e: NSEvent) -> NSEvent? {
+        guard e.window === window else { return e }
+        switch e.buttonNumber {
+        case 2:
+            return middleClickNav(e) ? nil : e
+        case 3:
+            if activeWebView.canGoBack { activeWebView.goBack() }
+            return nil
+        case 4:
+            if activeWebView.canGoForward { activeWebView.goForward() }
+            return nil
+        default:
+            return e
+        }
+    }
+
+    /// Middle-click on a nav button opens its target in a background tab (current tab untouched).
+    private func middleClickNav(_ e: NSEvent) -> Bool {
+        func over(_ b: NSView) -> Bool { b.bounds.contains(b.convert(e.locationInWindow, from: nil)) }
+        if over(backButton), let u = activeWebView.backForwardList.backItem?.url { openInBackgroundTab(u); return true }
+        if over(forwardButton), let u = activeWebView.backForwardList.forwardItem?.url { openInBackgroundTab(u); return true }
+        if over(reloadButton), let u = activeWebView.url ?? activeTab.currentURL { openInBackgroundTab(u); return true }
+        return false
+    }
+
+    /// Open a URL in a new tab WITHOUT switching to it (the current tab stays active).
+    private func openInBackgroundTab(_ url: URL) {
+        let tab = makeTab(); tab.workspaceId = activeWorkspaceId
+        tabs.append(tab); extensionBridge.didOpen(tab)
+        tab.load(url)
+        rebuildTabBar()
+    }
+
+    // MARK: - Resizable panes
+
+    private func resizeSidebar(by dx: CGFloat) {
+        let w = min(max(sidebarWidth + dx, Self.sidebarWidthRange.lowerBound), Self.sidebarWidthRange.upperBound)
+        guard w != sidebarWidth else { return }
+        sidebarWidth = w
+        sidebarWidthConstraint.constant = w
+    }
+
+    private func resizeTools(by dx: CGFloat) {
+        let w = min(max(toolsWidth + dx, Self.toolsWidthRange.lowerBound), Self.toolsWidthRange.upperBound)
+        guard w != toolsWidth else { return }
+        toolsWidth = w
+        toolsWidthConstraint.constant = w
     }
 
     /// Show/hide the native traffic lights — they belong to the sidebar, so they vanish
@@ -2917,6 +3020,7 @@ final class AppShell: NSObject {
     private func openPeek() {
         guard !sidebarOpen, !peeking else { return }
         peeking = true
+        sidebarSplitter.isHidden = true // don't resize a floating peek
         setSidebarFloating(true) // rounded + shadowed while revealed
         updateTrafficLights()
         slideSidebar(to: 0)
@@ -2924,7 +3028,7 @@ final class AppShell: NSObject {
     private func closePeek() {
         guard peeking else { return }
         peeking = false
-        slideSidebar(to: -Self.sidebarWidth) { [weak self] in self?.updateTrafficLights() }
+        slideSidebar(to: -sidebarWidth) { [weak self] in self?.updateTrafficLights() }
     }
     private func slideSidebar(to constant: CGFloat, then: (() -> Void)? = nil) {
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -2939,6 +3043,7 @@ final class AppShell: NSObject {
     @objc private func toggleSidebar() {
         sidebarOpen.toggle()
         peeking = false
+        sidebarSplitter.isHidden = !sidebarOpen   // no resize handle while collapsed
         setSidebarFloating(false) // docked (or collapsed): flush + no shadow
         webLeadingDocked.isActive = sidebarOpen   // docked: web sits beside the sidebar
         webLeadingFull.isActive = !sidebarOpen     // collapsed: web fills the width
@@ -2947,7 +3052,7 @@ final class AppShell: NSObject {
             ctx.duration = 0.2
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             ctx.allowsImplicitAnimation = true
-            sidebarLeadingConstraint.animator().constant = sidebarOpen ? 0 : -Self.sidebarWidth
+            sidebarLeadingConstraint.animator().constant = sidebarOpen ? 0 : -sidebarWidth
             window.contentView?.layoutSubtreeIfNeeded()
         }, completionHandler: { [weak self] in
             self?.updateTrafficLights() // hide after the collapse finishes
@@ -2959,8 +3064,10 @@ final class AppShell: NSObject {
     private func setToolsOpen(_ open: Bool, animated: Bool) {
         toolsOpen = open
         toolsSidebar.isHidden = !open
+        toolsSplitter.isHidden = !open
         webTrailingCollapsed.isActive = !open
         webTrailingWithTools.isActive = open
+        toolsButton.restingTint = open ? .controlAccentColor : .labelColor
         toolsButton.contentTintColor = open ? .controlAccentColor : .labelColor
         let apply = { self.window.contentView?.layoutSubtreeIfNeeded() }
         if animated {
@@ -2980,10 +3087,25 @@ final class AppShell: NSObject {
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
         b.isBordered = false                 // no bezel — crisp symbol on the tinted bar
         b.contentTintColor = .labelColor      // high-contrast (adapts light/dark), not accent blue
+        if let h = b as? HoverIconButton { h.restingTint = .labelColor }
         b.target = self
         b.action = action
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        b.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 26).isActive = true
+    }
+
+    /// A subtler icon button (resting secondary tint, hover brightens) for the shield/settings cluster.
+    private func configureIconButton(_ b: HoverIconButton, symbol: String, action: Selector, tip: String) {
+        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+        b.isBordered = false
+        b.restingTint = .secondaryLabelColor
+        b.contentTintColor = .secondaryLabelColor
+        b.target = self; b.action = action
+        b.toolTip = tip
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.widthAnchor.constraint(equalToConstant: 24).isActive = true
         b.heightAnchor.constraint(equalToConstant: 26).isActive = true
     }
 
@@ -3051,6 +3173,28 @@ final class AppShell: NSObject {
     @objc private func goBack() { activeWebView.goBack() }
     @objc private func goForward() { activeWebView.goForward() }
     @objc private func reload() { activeWebView.reload() }
+
+    /// Open the macOS share sheet for the current page, anchored to the share button.
+    @objc private func shareCurrentURL(_ sender: NSView) {
+        guard let url = activeWebView.url ?? activeTab.currentURL else { return }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
+
+    /// A quick fade + slight rise on the freshly shown web content, so opening a tab feels smooth.
+    private func animateTabOpen() {
+        let v = activeWebView
+        v.wantsLayer = true
+        v.alphaValue = 0
+        v.layer?.setAffineTransform(CGAffineTransform(translationX: 0, y: 6))
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            v.animator().alphaValue = 1
+            v.layer?.setAffineTransform(.identity)
+        }
+    }
 
     private func installGateLogging() {
         guard ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil else { return }

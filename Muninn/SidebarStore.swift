@@ -118,6 +118,9 @@ struct SidebarState: Codable {
     var toolsSidebarOpen: Bool = false
     /// Configured Live Calendars (Tools sidebar).
     var liveCalendars: [LiveCalendar] = []
+    /// User-resized pane widths (nil = use the default).
+    var sidebarWidth: Double?
+    var toolsWidth: Double?
 }
 
 /// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in
