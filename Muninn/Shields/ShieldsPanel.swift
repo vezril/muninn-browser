@@ -31,6 +31,7 @@ final class ShieldsPanelController: NSViewController {
         let ads = statusRow("Block ads & trackers", active: up && shields.blockAds)
         let https = statusRow("Upgrade connections to HTTPS", active: up && shields.upgradeHTTPS)
         let cookies = statusRow("Block cross-site cookies", active: up && shields.blockCookies)
+        let strip = statusRow("Strip tracking parameters", active: up && shields.stripQueryParams)
 
         let scripts = NSSwitch(); scripts.state = shields.scriptsBlocked(for: host) ? .on : .off
         scripts.isEnabled = up
@@ -44,7 +45,7 @@ final class ShieldsPanelController: NSViewController {
         settings.font = .systemFont(ofSize: 12)
 
         let head = NSStackView(views: [title, site]); head.orientation = .vertical; head.alignment = .leading; head.spacing = 1
-        let stack = NSStackView(views: [head, masterRow, sep, ads, https, cookies, scriptsRow, settings])
+        let stack = NSStackView(views: [head, masterRow, sep, ads, https, cookies, strip, scriptsRow, settings])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.setCustomSpacing(14, after: head)
@@ -57,7 +58,7 @@ final class ShieldsPanelController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
             sep.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
-        for r in [masterRow, scriptsRow, ads, https, cookies] {
+        for r in [masterRow, scriptsRow, ads, https, cookies, strip] {
             r.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         view = root
