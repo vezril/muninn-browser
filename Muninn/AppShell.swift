@@ -2009,10 +2009,14 @@ final class AppShell: NSObject {
     @objc private func extensionActionClicked(_ sender: NSButton) {
         guard let context = extActionButtons[sender], !tabs.isEmpty else { return }
         let proxy = extensionBridge.proxy(for: activeTab)
-        let action = context.action(for: proxy)
-        if let action, action.presentsPopup, let popover = action.popupPopover {
-            popover.behavior = .transient
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+        guard let action = context.action(for: proxy) else { return }
+        if action.presentsPopup {
+            if let popover = action.popupPopover {
+                popover.behavior = .transient
+                popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+            } else {
+                context.performAction(for: proxy)   // WebKit builds the popup → presentActionPopup delegate
+            }
         } else {
             context.performAction(for: proxy)   // popup-less action → fire onClicked
         }
@@ -2676,20 +2680,20 @@ final class AppShell: NSObject {
         configureIconButton(settingsButton, symbol: "gearshape",
                             action: #selector(showSettingsMenu(_:)), tip: "Settings")
 
-        // Browser-extension action buttons — inline in the top-bar cluster (rightmost, so extra
-        // extensions clip before the fixed controls if the sidebar is narrow).
+        // Browser-extension action buttons — on the address row (full width, no traffic-light
+        // offset), so a variable number of extension icons never overflows the narrow top strip.
         extensionBar.orientation = .horizontal
         extensionBar.spacing = 2
         extensionBar.alignment = .centerY
         extensionBar.translatesAutoresizingMaskIntoConstraints = false
 
-        // Vertical divider separating the nav cluster from the shield/settings/extensions cluster.
+        // Vertical divider separating the nav cluster from the shield/settings cluster.
         let toolbarDivider = NSBox(); toolbarDivider.boxType = .separator
         toolbarDivider.translatesAutoresizingMaskIntoConstraints = false
 
-        // Top bar: [toggle back forward reload | shield settings <ext…>]
+        // Top bar: [toggle back forward reload | shield settings]
         let topBar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton,
-                                         toolbarDivider, shieldButton, settingsButton, extensionBar])
+                                         toolbarDivider, shieldButton, settingsButton])
         topBar.orientation = .horizontal
         topBar.spacing = 2
         topBar.alignment = .centerY
@@ -2722,6 +2726,7 @@ final class AppShell: NSObject {
 
         sidebar.addSubview(topBar)
         sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under the top bar
+        sidebar.addSubview(extensionBar) // extension icons on the address row, left of Share
         sidebar.addSubview(shareButton)  // inside the URL box, right edge
         // Library button — bottom-left, beside the workspace switcher.
         libraryButton.image = NSImage(systemSymbolName: "books.vertical", accessibilityDescription: "Library")?
@@ -2739,11 +2744,13 @@ final class AppShell: NSObject {
         NSLayoutConstraint.activate([
             toolbarDivider.heightAnchor.constraint(equalToConstant: 18),
             topBar.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 6),
-            topBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 80), // clear of the traffic lights
+            topBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 76), // clear of the traffic lights
             // no trailing constraint: the bar keeps its intrinsic size (never compresses/overlaps)
             addressField.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 10),
             addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
-            addressField.trailingAnchor.constraint(equalTo: shareButton.leadingAnchor, constant: -4),
+            addressField.trailingAnchor.constraint(equalTo: extensionBar.leadingAnchor, constant: -4),
+            extensionBar.trailingAnchor.constraint(equalTo: shareButton.leadingAnchor, constant: -4),
+            extensionBar.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             shareButton.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -8),
             shareButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
@@ -3091,7 +3098,7 @@ final class AppShell: NSObject {
         b.target = self
         b.action = action
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        b.widthAnchor.constraint(equalToConstant: 24).isActive = true
         b.heightAnchor.constraint(equalToConstant: 26).isActive = true
     }
 

@@ -15,6 +15,7 @@ final class SettingsWindowController: NSWindowController {
         ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
     private let extensionsList = NSStackView()
+    private let storeField = NSTextField()
     private let vaultPathLabel = NSTextField(labelWithString: "")
     private let notesPathLabel = NSTextField(labelWithString: "")
     private let routingList = NSStackView()
@@ -477,7 +478,7 @@ final class SettingsWindowController: NSWindowController {
     private func extensionsView() -> NSView {
         let v = NSView()
         let title = heading("Browser Extensions")
-        let hint = NSTextField(labelWithString: "Install Web Extensions from an unpacked folder or a .zip / .crx. They run in every tab; content scripts and toolbar popups work. Compatibility follows Apple's WebExtensions support — not every Chrome extension will load.")
+        let hint = NSTextField(labelWithString: "Install Web Extensions from the Chrome Web Store, an unpacked folder, or a .zip / .crx. They run in every tab; content scripts and toolbar popups work. Compatibility follows Apple's WebExtensions support — not every Chrome extension will load.")
         hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 3
         hint.preferredMaxLayoutWidth = 620
@@ -487,7 +488,15 @@ final class SettingsWindowController: NSWindowController {
         extensionsList.spacing = 8
         extensionsList.translatesAutoresizingMaskIntoConstraints = false
 
-        let add = NSButton(title: "Add Extension…", image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)!, target: self, action: #selector(addExtension))
+        // Inline Web Store install row (a normal Settings-window field — paste/select-all work here,
+        // unlike an NSAlert accessory field).
+        storeField.placeholderString = "Chrome Web Store link or 32-character id"
+        storeField.font = .systemFont(ofSize: 13)
+        storeField.target = self; storeField.action = #selector(addExtensionFromStore) // Return installs
+        let install = NSButton(title: "Install", image: NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)!, target: self, action: #selector(addExtensionFromStore))
+        install.imagePosition = .imageLeading; install.bezelStyle = .rounded; install.controlSize = .regular
+
+        let add = NSButton(title: "Add Unpacked / .zip / .crx…", image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)!, target: self, action: #selector(addExtension))
         add.imagePosition = .imageLeading; add.bezelStyle = .rounded; add.controlSize = .regular
 
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
@@ -495,14 +504,19 @@ final class SettingsWindowController: NSWindowController {
         let doc = NSView(); doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(extensionsList); scroll.documentView = doc
 
-        for s in [title, hint, add, scroll] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        for s in [title, hint, storeField, install, add, scroll] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
             title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
             hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
             hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
             hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
-            add.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
+            storeField.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
+            storeField.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            storeField.trailingAnchor.constraint(equalTo: install.leadingAnchor, constant: -8),
+            storeField.centerYAnchor.constraint(equalTo: install.centerYAnchor),
+            install.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            add.topAnchor.constraint(equalTo: storeField.bottomAnchor, constant: 10),
             add.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
             scroll.topAnchor.constraint(equalTo: add.bottomAnchor, constant: 12),
             scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
@@ -591,6 +605,26 @@ final class SettingsWindowController: NSWindowController {
                 a.messageText = "Couldn't add extension"
                 a.informativeText = "The folder or archive doesn't contain a valid Web Extension (manifest.json). \(error.localizedDescription)"
                 a.runModal()
+            }
+        }
+    }
+
+    @objc private func addExtensionFromStore() {
+        let input = storeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else { return }
+        storeField.isEnabled = false
+        storeField.placeholderString = "Downloading…"
+        Task { @MainActor in
+            defer { self.storeField.isEnabled = true; self.storeField.placeholderString = "Chrome Web Store link or 32-character id" }
+            do {
+                try await ExtensionManager.shared.addFromWebStore(input)
+                self.storeField.stringValue = ""
+                self.rebuildExtensionsList()
+            } catch {
+                let err = NSAlert()
+                err.messageText = "Couldn't install extension"
+                err.informativeText = error.localizedDescription
+                err.runModal()
             }
         }
     }

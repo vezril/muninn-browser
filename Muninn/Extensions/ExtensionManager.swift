@@ -39,7 +39,10 @@ final class ExtensionManager {
         dir = base.appendingPathComponent("Extensions", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         indexURL = dir.appendingPathComponent("index.json")
-        installed = loadIndex()
+        // Stay hermetic under XCTest: don't load the developer's real installed extensions (an
+        // attached controller would leak `browser` into the MAIN world and break the S2 tests).
+        let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        installed = underTest ? [] : loadIndex()
     }
 
     /// Load all enabled extensions into the controller (call once at launch).
@@ -48,6 +51,57 @@ final class ExtensionManager {
     }
 
     // MARK: install
+
+    /// Install directly from the Chrome Web Store, given a store URL or a bare 32-char extension id.
+    /// Downloads the CRX from Google's update endpoint, strips the CRX header to a plain ZIP, and
+    /// runs it through the normal unpack/load path.
+    func addFromWebStore(_ input: String) async throws {
+        guard let id = Self.extensionID(from: input) else { throw ExtError.badStoreURL }
+        // Google's on-demand CRX endpoint (follows a redirect to the actual file).
+        let endpoint = "https://clients2.google.com/service/update2/crx?response=redirect"
+            + "&acceptformat=crx2,crx3&prodversion=130.0.0.0"
+            + "&x=id%3D\(id)%26installsource%3Dondemand%26uc"
+        guard let url = URL(string: endpoint) else { throw ExtError.badStoreURL }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count > 16 else {
+            throw ExtError.downloadFailed
+        }
+        // Strip the CRX header → clean ZIP, write to a temp file, unpack under the extension id.
+        let zip = Self.zipData(fromCRX: data)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("\(id).zip")
+        try? FileManager.default.removeItem(at: tmp)
+        try zip.write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await add(from: tmp)
+    }
+
+    /// Extract a 32-char (a–p) Chrome extension id from a store URL or a bare id.
+    static func extensionID(from input: String) -> String? {
+        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.range(of: "^[a-p]{32}$", options: .regularExpression) != nil { return s }
+        if let r = s.range(of: "[a-p]{32}", options: .regularExpression) { return String(s[r]) }
+        return nil
+    }
+
+    /// Return the ZIP payload inside a CRX (v2/v3), or the data unchanged if it isn't a CRX.
+    static func zipData(fromCRX data: Data) -> Data {
+        guard data.count > 16, data.prefix(4) == Data("Cr24".utf8) else { return data }
+        func u32(_ offset: Int) -> Int {
+            Int(data[data.startIndex + offset]) | (Int(data[data.startIndex + offset + 1]) << 8)
+                | (Int(data[data.startIndex + offset + 2]) << 16) | (Int(data[data.startIndex + offset + 3]) << 24)
+        }
+        let version = u32(4)
+        let zipStart: Int
+        if version == 3 {
+            zipStart = 12 + u32(8)                    // magic+version+headerLen, then header
+        } else if version == 2 {
+            zipStart = 16 + u32(8) + u32(12)          // magic+version+pubkeyLen+sigLen, then pubkey+sig
+        } else {
+            return data
+        }
+        guard zipStart < data.count else { return data }
+        return data.subdata(in: (data.startIndex + zipStart)..<data.endIndex)
+    }
 
     /// Add an extension from an unpacked folder or a .zip/.crx archive.
     func add(from url: URL) async throws {
@@ -168,5 +222,14 @@ final class ExtensionManager {
         if let data = try? JSONEncoder().encode(installed) { try? data.write(to: indexURL, options: .atomic) }
     }
 
-    enum ExtError: Error { case noManifest }
+    enum ExtError: LocalizedError {
+        case noManifest, badStoreURL, downloadFailed
+        var errorDescription: String? {
+            switch self {
+            case .noManifest:   return "No manifest.json found in the extension."
+            case .badStoreURL:   return "Couldn't find an extension id in that URL. Paste a Chrome Web Store link or the 32-character id."
+            case .downloadFailed: return "The download failed. Check the link and your connection."
+            }
+        }
+    }
 }
