@@ -67,6 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func newQuickLook() { shell?.openQuickLook(nil) }
+    @objc private func savePageAs() { shell?.savePageAs() }
+    @objc private func findInPage() { shell?.showFind() }
+    @objc private func findNextMenu() { shell?.findNext() }
+    @objc private func findPrevMenu() { shell?.findPrev() }
     @objc private func openTaskManager() { shell?.openTaskManager() }
     @objc private func translatePage() { shell?.translateButtonClicked() }
     @objc private func showReminders() { shell?.revealRemindersTool() }
@@ -120,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         // (no key equivalent — the remappable shortcut is handled by AppShell's key monitor)
         fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Save Page As…", action: #selector(savePageAs), keyEquivalent: "s").target = self
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Translate Page", action: #selector(translatePage), keyEquivalent: "").target = self
@@ -149,6 +154,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Find…", action: #selector(findInPage), keyEquivalent: "f").target = self
+        editMenu.addItem(withTitle: "Find Next", action: #selector(findNextMenu), keyEquivalent: "g").target = self
+        let findPrev = editMenu.addItem(withTitle: "Find Previous", action: #selector(findPrevMenu), keyEquivalent: "g")
+        findPrev.keyEquivalentModifierMask = [.command, .shift]; findPrev.target = self
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
