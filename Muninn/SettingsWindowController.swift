@@ -16,6 +16,10 @@ final class SettingsWindowController: NSWindowController {
     ]
     private let extensionsList = NSStackView()
     private let storeField = NSTextField()
+    // Website language options ("" = system locale).
+    private let langCodes = ["en", "fr", "es", "de", "it", "pt", "nl", "ja", "zh", ""]
+    private let langNames = ["English", "Français", "Español", "Deutsch", "Italiano",
+                             "Português", "Nederlands", "日本語", "中文", "System default"]
     private let vaultPathLabel = NSTextField(labelWithString: "")
     private let notesPathLabel = NSTextField(labelWithString: "")
     private let routingList = NSStackView()
@@ -160,20 +164,38 @@ final class SettingsWindowController: NSWindowController {
         retention.addItems(withTitles: NotificationRetention.allCases.map { $0.displayName })
         retention.selectItem(at: NotificationRetention.allCases.firstIndex(of: NotificationRetention.current) ?? 2)
         retention.target = self; retention.action = #selector(retentionChanged(_:))
+        let lang = NSPopUpButton()
+        lang.addItems(withTitles: langNames)
+        lang.selectItem(at: langCodes.firstIndex(of: AppSettings.websiteLanguage) ?? 0)
+        lang.target = self; lang.action = #selector(languageChanged(_:))
         let stack = formStack([
             row("Warn before quitting", makeSwitch(host?.settingsWarnBeforeQuitting ?? false, #selector(toggleWarnQuit(_:)))),
             row("Keep notifications for", retention),
+            row("Language websites see", lang),
         ])
+        let langHint = NSTextField(labelWithString: "Overrides the language sites detect (Accept-Language + navigator.language), so a foreign IP/locale doesn't change it. Fully applies after restarting Muninn.")
+        langHint.font = .systemFont(ofSize: 11); langHint.textColor = .secondaryLabelColor
+        langHint.lineBreakMode = .byWordWrapping; langHint.maximumNumberOfLines = 3; langHint.preferredMaxLayoutWidth = 560
         title.translatesAutoresizingMaskIntoConstraints = false
-        v.addSubview(title); v.addSubview(stack)
+        langHint.translatesAutoresizingMaskIntoConstraints = false
+        v.addSubview(title); v.addSubview(stack); v.addSubview(langHint)
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
             title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
             stack.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 18),
             stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            langHint.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 8),
+            langHint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            langHint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
         ])
         return v
+    }
+    @objc private func languageChanged(_ s: NSPopUpButton) {
+        let i = s.indexOfSelectedItem
+        guard i >= 0, i < langCodes.count else { return }
+        AppSettings.websiteLanguage = langCodes[i]
+        AppSettings.applyWebLanguageAtLaunch()   // Accept-Language fully applies next launch
     }
     @objc private func toggleWarnQuit(_ s: NSSwitch) { host?.settingsWarnBeforeQuitting = (s.state == .on) }
     @objc private func retentionChanged(_ s: NSPopUpButton) {
@@ -936,6 +958,7 @@ final class SettingsWindowController: NSWindowController {
             row("Strip tracking URL parameters", makeSwitch(s.stripQueryParams, #selector(shieldStrip(_:)))),
             row("Bounce-tracking protection", makeSwitch(s.debounce, #selector(shieldDebounce(_:)))),
             row("Fingerprinting protection", makeSwitch(s.fingerprintProtection, #selector(shieldFP(_:)))),
+            row("Block cookie-consent notices", makeSwitch(s.blockCookieNotices, #selector(shieldCookieNotices(_:)))),
         ])
         for x in [title, hint] { x.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(x) }
         v.addSubview(stack)
@@ -957,6 +980,7 @@ final class SettingsWindowController: NSWindowController {
     @objc private func shieldStrip(_ s: NSSwitch) { ShieldsManager.shared.stripQueryParams = (s.state == .on) }
     @objc private func shieldDebounce(_ s: NSSwitch) { ShieldsManager.shared.debounce = (s.state == .on) }
     @objc private func shieldFP(_ s: NSSwitch) { ShieldsManager.shared.fingerprintProtection = (s.state == .on) }
+    @objc private func shieldCookieNotices(_ s: NSSwitch) { ShieldsManager.shared.blockCookieNotices = (s.state == .on) }
 
     // MARK: Obsidian
 

@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // WebKit inspector-page default makes even the first open detached (no docked flash).
         UserDefaults.standard.set(false, forKey: "__WebInspectorPageGroupLevel1__.WebKit2InspectorStartsAttached")
 
+        // Force the preferred website language (default English) via Accept-Language, so a
+        // French IP/locale doesn't serve French. MUST run before any WKWebView is created.
+        AppSettings.applyWebLanguageAtLaunch()
+
         // Under XCTest the app is only a host for WKWebView; show no window
         // (keeps `xcodebuild test` headless — ground rule 2).
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
