@@ -75,6 +75,11 @@ enum AppSettings {
         get { UserDefaults.standard.object(forKey: "muninn.warnBeforeQuitting") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "muninn.warnBeforeQuitting") }
     }
+    /// Built-in JSON viewer: prettify + syntax-colour + collapsible tree for JSON documents. On by default.
+    static var formatJSON: Bool {
+        get { UserDefaults.standard.object(forKey: "muninn.formatJSON") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "muninn.formatJSON") }
+    }
     /// Developer Mode: enables the page Web Inspector + right-click View Source / Inspect
     /// Element and the ⌥⌘U / ⌥⌘I shortcuts. Off by default.
     static var developerMode: Bool {

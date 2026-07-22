@@ -170,6 +170,7 @@ final class SettingsWindowController: NSWindowController {
         lang.target = self; lang.action = #selector(languageChanged(_:))
         let stack = formStack([
             row("Warn before quitting", makeSwitch(host?.settingsWarnBeforeQuitting ?? false, #selector(toggleWarnQuit(_:)))),
+            row("Format & colour JSON documents", makeSwitch(AppSettings.formatJSON, #selector(toggleFormatJSON(_:)))),
             row("Keep notifications for", retention),
             row("Language websites see", lang),
         ])
@@ -983,6 +984,7 @@ final class SettingsWindowController: NSWindowController {
     @objc private func shieldFP(_ s: NSSwitch) { ShieldsManager.shared.fingerprintProtection = (s.state == .on) }
     @objc private func shieldCookieNotices(_ s: NSSwitch) { ShieldsManager.shared.blockCookieNotices = (s.state == .on) }
     @objc private func shieldShareLinks(_ s: NSSwitch) { ShieldsManager.shared.cleanSharedLinks = (s.state == .on) }
+    @objc private func toggleFormatJSON(_ s: NSSwitch) { AppSettings.formatJSON = (s.state == .on) }
 
     // MARK: Obsidian
 

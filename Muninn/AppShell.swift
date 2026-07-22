@@ -22,6 +22,8 @@ final class AppShell: NSObject {
     /// Recently closed regular tabs (for Cmd+Shift+T), most-recent last.
     private var closedTabs: [SavedTab] = []
     private var palette: CommandPalette?
+    private var findBar: FindBarView?
+    private var findQuery = ""
     private let askChat = AskChatView()
     private var askTask: Task<Void, Never>?
     private let notificationStore = NotificationStore()
@@ -301,6 +303,8 @@ final class AppShell: NSObject {
         tab.injector.onViewSource = { [weak self] wv in self?.viewSource(of: wv) }
         // Middle-click a link → open it in a background tab (current tab stays put).
         tab.injector.onMiddleClickLink = { [weak self] url in self?.openInBackgroundTab(url) }
+        // A local file dropped onto the web view → open it in a new tab.
+        tab.injector.onOpenFile = { [weak self] url in self?.openInNewTab(url) }
         // Shields: per-site JavaScript decision + apply the content-rule list to this tab.
         tab.injector.onDecideJavaScript = { url in ShieldsManager.shared.javaScriptAllowed(for: url) }
         applyShields(to: tab)
@@ -1828,6 +1832,74 @@ final class AppShell: NSObject {
         openInNewTab(url)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Find in page (⌘F)
+
+    /// Show the find bar (or refocus it), anchored top-right over the web card.
+    @objc func showFind() {
+        guard let content = window.contentView else { return }
+        if let bar = findBar { bar.focus(); return }
+        let bar = FindBarView()
+        bar.onQueryChange = { [weak self] q in self?.findQuery = q; self?.performFind(backwards: false) }
+        bar.onNext = { [weak self] in self?.performFind(backwards: false) }
+        bar.onPrev = { [weak self] in self?.performFind(backwards: true) }
+        bar.onClose = { [weak self] in self?.closeFind() }
+        content.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: webContainer.topAnchor, constant: 12),
+            bar.trailingAnchor.constraint(equalTo: webContainer.trailingAnchor, constant: -14),
+        ])
+        findBar = bar
+        bar.focus()
+    }
+
+    /// ⌘G / ⇧⌘G — advance the search (opening the bar first if needed).
+    func findNext() { findBar == nil ? showFind() : performFind(backwards: false) }
+    func findPrev() { findBar == nil ? showFind() : performFind(backwards: true) }
+
+    private func performFind(backwards: Bool) {
+        guard let bar = findBar else { return }
+        let q = findQuery
+        guard !q.isEmpty else { bar.setState(found: true, count: nil); return }
+        let cfg = WKFindConfiguration()
+        cfg.backwards = backwards; cfg.caseSensitive = false; cfg.wraps = true
+        let wv = activeWebView
+        Task { @MainActor in
+            let result = try? await wv.find(q, configuration: cfg)
+            guard self.activeWebView === wv, self.findBar === bar else { return }
+            let found = result?.matchFound ?? false
+            self.countMatches(q, in: wv) { count in
+                guard self.findBar === bar else { return }
+                bar.setState(found: found, count: count)
+            }
+        }
+    }
+
+    /// Count visible occurrences of `q` (case-insensitive) for the "N matches" readout — WKWebView's
+    /// native find gives no count, so this approximates it from the rendered text.
+    private func countMatches(_ q: String, in wv: WKWebView, _ done: @escaping (Int?) -> Void) {
+        let js = "(function(q){try{var t=document.body?document.body.innerText:'';if(!t||!q)return 0;" +
+                 "var tl=t.toLowerCase(),ql=q.toLowerCase(),i=0,n=0;while((i=tl.indexOf(ql,i))>=0){n++;i+=ql.length;}return n;}catch(e){return -1;}})(\(jsStringLiteral(q)))"
+        wv.evaluateJavaScript(js) { result, _ in
+            MainActor.assumeIsolated {
+                if let n = result as? Int, n >= 0 { done(n) } else { done(nil) }
+            }
+        }
+    }
+
+    /// Encode `s` as a safe JS string literal (with surrounding quotes).
+    private func jsStringLiteral(_ s: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [s]),
+              let arr = String(data: data, encoding: .utf8) else { return "\"\"" }
+        return String(arr.dropFirst().dropLast())   // ["…"] → "…"
+    }
+
+    private func closeFind() {
+        findBar?.removeFromSuperview(); findBar = nil; findQuery = ""
+        // Best-effort clear of the native find highlight (it selects the match).
+        activeWebView.evaluateJavaScript("if(window.getSelection)window.getSelection().removeAllRanges()", completionHandler: nil)
+        window.makeFirstResponder(activeWebView)
     }
 
     // MARK: - command palette (Cmd+N)
@@ -3499,6 +3571,8 @@ final class AppShell: NSObject {
     private func navigate(to string: String) {
         let s = string.trimmingCharacters(in: .whitespaces)
         guard !s.isEmpty else { return }
+        // Local file: an absolute/home path or a file:// URL → load it directly.
+        if let file = Self.fileURL(from: s) { activeTab.load(file); return }
         // URL-like → open it; otherwise search with the configured engine.
         let looksURL = !s.contains(" ") && (s.contains("://") || (s.contains(".") && !s.hasSuffix(".")))
         if looksURL {
@@ -3508,10 +3582,28 @@ final class AppShell: NSObject {
         activeTab.load(currentSearchEngine.url(s))
     }
 
+    /// A file URL from address-bar text: a `file://` URL, or an absolute (`/…`) or home (`~/…`) path.
+    /// Returns nil for anything else (so it falls through to normal URL/search handling).
+    static func fileURL(from s: String) -> URL? {
+        if s.hasPrefix("file://") { return URL(string: s) }
+        guard s.hasPrefix("/") || s.hasPrefix("~/") || s == "~" else { return nil }
+        return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+    }
+
     @objc private func addressSubmitted() { navigate(to: addressField.stringValue) }
     @objc private func goBack() { activeWebView.goBack() }
     @objc private func goForward() { activeWebView.goForward() }
     @objc private func reload() { activeWebView.reload() }
+
+    /// Save the current page/PDF to the profile's download folder (⌘S, File menu, or right-click).
+    /// Routes through the active tab's tracked `startDownload` → recorded in the Library. This is the
+    /// only way to save a PDF you're viewing, since WebKit renders PDFs inline (never a WKDownload).
+    @objc func savePageAs() {
+        guard let url = activeWebView.url, let scheme = url.scheme,
+              ["http", "https", "file"].contains(scheme) else { return }
+        activeTab.injector.startDownload(url)
+        showToast(url.pathExtension.lowercased() == "pdf" ? "Downloading PDF…" : "Downloading page…", record: false)
+    }
 
     /// Open the macOS share sheet for the current page, anchored to the share button.
     @objc private func shareCurrentURL(_ sender: NSView) {

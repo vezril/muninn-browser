@@ -13,9 +13,31 @@ final class MuninnWebView: WKWebView {
     var onViewSource: ((MuninnWebView) -> Void)?
     /// Start a tracked download (Library) of a URL.
     var onDownload: ((URL) -> Void)?
+    /// A local file was dropped onto the web view (host opens it in a tab).
+    var onOpenFile: ((URL) -> Void)?
     /// Last right-clicked image / link (set from an injected `contextmenu` listener).
     var lastCtxImageURL: URL?
     var lastCtxLinkURL: URL?
+
+    /// The first file URL on a drag pasteboard, if any.
+    private static func fileURL(_ sender: NSDraggingInfo) -> URL? {
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: opts) as? [URL]
+        return urls?.first(where: { $0.isFileURL })
+    }
+
+    // Intercept *file* drops to open them as tabs; defer every other drag (image/text/upload) to
+    // WebKit so page drop-zones and drag-to-upload keep working.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Self.fileURL(sender) != nil ? .copy : super.draggingEntered(sender)
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Self.fileURL(sender) != nil ? .copy : super.draggingUpdated(sender)
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let url = Self.fileURL(sender), let open = onOpenFile { open(url); return true }
+        return super.performDragOperation(sender)
+    }
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
@@ -24,14 +46,22 @@ final class MuninnWebView: WKWebView {
         if let i = menu.items.firstIndex(where: { $0.title.localizedCaseInsensitiveContains("Download Image") }) {
             menu.removeItem(at: i)
         }
-        var addedDownload = false
+        var addedSep = false
+        func ensureSeparator() { if !addedSep { menu.addItem(.separator()); addedSep = true } }
         if let img = lastCtxImageURL {
-            menu.addItem(.separator()); addedDownload = true
+            ensureSeparator()
             addDownloadItem(to: menu, "Save Image", img)
         }
         if let link = lastCtxLinkURL, link != lastCtxImageURL {
-            if !addedDownload { menu.addItem(.separator()) }
+            ensureSeparator()
             addDownloadItem(to: menu, "Download Linked File", link)
+        }
+        // Page-level download — the only way to save a PDF you're *viewing* (WebKit renders it
+        // inline, so it never becomes a WKDownload). Routes through the tracked `onDownload` path.
+        if let url = url, let scheme = url.scheme, ["http", "https", "file"].contains(scheme) {
+            ensureSeparator()
+            let title = url.pathExtension.lowercased() == "pdf" ? "Download PDF" : "Save Page As…"
+            addDownloadItem(to: menu, title, url)
         }
 
         guard AppSettings.developerMode else { return }

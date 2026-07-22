@@ -41,6 +41,8 @@ final class InjectionCoordinator: NSObject {
     var onDecideJavaScript: ((URL?) -> Bool)?
     /// Middle-click on a link → open it in a (background) new tab.
     var onMiddleClickLink: ((URL) -> Void)?
+    /// A local file dropped onto the web view (host opens it in a tab).
+    var onOpenFile: ((URL) -> Void)?
     /// In-flight download → (destination, source) for recording on completion.
     private var downloadInfo: [ObjectIdentifier: (dest: URL, source: URL?)] = [:]
 
@@ -155,6 +157,12 @@ final class InjectionCoordinator: NSObject {
             if ShieldsManager.shared.blockAds {
                 addUserScript(AdCosmetics.script(), at: .atDocumentStart, world: .page, allFrames: true)
             }
+            // Built-in JSON viewer: prettify + syntax-colour + collapsible tree when the top document
+            // is JSON. Self-gates on document.contentType / .json URL + a successful JSON.parse, so it
+            // never touches HTML pages. Main frame only, document-end (body text is ready).
+            if AppSettings.formatJSON {
+                addUserScript(JSONViewer.script, at: .atDocumentEnd, world: .page, allFrames: false)
+            }
         }
 
         // Broker handler registered ONLY for the isolated world — the page MAIN
@@ -204,6 +212,7 @@ final class InjectionCoordinator: NSObject {
         let mwv = MuninnWebView(frame: .zero, configuration: config)
         mwv.onViewSource = { [weak self] wv in self?.onViewSource?(wv) }
         mwv.onDownload = { [weak self] url in self?.startDownload(url) }
+        mwv.onOpenFile = { [weak self] url in self?.onOpenFile?(url) }
         self.webView = mwv
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
@@ -217,7 +226,15 @@ final class InjectionCoordinator: NSObject {
         broker.registerContext(contextName, webView: webView, world: isolatedWorld)
     }
 
-    func load(_ url: URL) { webView.load(URLRequest(url: url)) }
+    func load(_ url: URL) {
+        // WKWebView refuses file:// via a plain URLRequest — it needs an explicit read-access grant.
+        // Grant the enclosing directory so a local page's sibling assets (css/js/images) load too.
+        if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            webView.load(URLRequest(url: url))
+        }
+    }
 
     /// Lifecycle symmetry with BackgroundHost (this owns a live networking WKWebView).
     func stop() {
@@ -388,11 +405,21 @@ extension InjectionCoordinator {
 extension InjectionCoordinator: WKDownloadDelegate {
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping @MainActor (URL?) -> Void) {
+        let dest = uniqueDestination(for: suggestedFilename, in: downloadsFolder())
+        downloadInfo[ObjectIdentifier(download)] = (dest, response.url)
+        completionHandler(dest)
+    }
+
+    /// The active tab's profile download folder (created if needed), else ~/Downloads.
+    func downloadsFolder() -> URL {
         let folder = downloadFolder?() ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let name = suggestedFilename.isEmpty ? "download" : suggestedFilename
-        var dest = folder.appendingPathComponent(name)
-        // Avoid clobbering an existing file: "name.ext", "name-1.ext", …
+        return folder
+    }
+
+    /// A non-clobbering destination in `folder` for `filename` ("name.ext", "name-1.ext", …).
+    func uniqueDestination(for filename: String, in folder: URL) -> URL {
+        var dest = folder.appendingPathComponent(filename.isEmpty ? "download" : filename)
         if FileManager.default.fileExists(atPath: dest.path) {
             let base = dest.deletingPathExtension().lastPathComponent
             let ext = dest.pathExtension
@@ -402,8 +429,7 @@ extension InjectionCoordinator: WKDownloadDelegate {
                 dest = folder.appendingPathComponent(candidate); n += 1
             } while FileManager.default.fileExists(atPath: dest.path)
         }
-        downloadInfo[ObjectIdentifier(download)] = (dest, response.url)
-        completionHandler(dest)
+        return dest
     }
 
     func downloadDidFinish(_ download: WKDownload) {
@@ -424,6 +450,24 @@ extension InjectionCoordinator: WKUIDelegate {
         NSLog("[peek] createWebView (blank) url=%@", navigationAction.request.url?.absoluteString ?? "?")
         onCreateWebView?(navigationAction)
         return nil
+    }
+
+    /// Makes WebKit's native **PDF HUD** ⬇ button work. When you view a PDF inline, WebKit fetches the
+    /// bytes on click and hands them to this **private `WKUIDelegate` SPI** (`WKUIDelegatePrivate.h`,
+    /// macOS 10.13.4+). Without it WebKit early-outs and the button is a silent no-op (Safari implements
+    /// it; third-party embeddings usually don't). Lowest-risk SPI in the app: we only *implement* a
+    /// callback — no private symbol is called or linked; the bytes arrive as plain `Data`. We reuse the
+    /// same profile-folder write + Library recording as the ⌘S / right-click path.
+    @objc(_webView:saveDataToFile:suggestedFilename:mimeType:originatingURL:)
+    func webView(_ webView: WKWebView, saveDataToFile data: Data, suggestedFilename: String,
+                 mimeType: String, originatingURL: URL) {
+        let dest = uniqueDestination(for: suggestedFilename, in: downloadsFolder())
+        do {
+            try data.write(to: dest)
+            onDownloadFinished?(dest, originatingURL)
+        } catch {
+            NSLog("[pdf] HUD saveDataToFile failed: %@", String(describing: error))
+        }
     }
 }
 
