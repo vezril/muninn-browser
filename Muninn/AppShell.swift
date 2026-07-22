@@ -82,7 +82,12 @@ final class AppShell: NSObject {
     private let settingsButton = HoverIconButton()
     private let shieldButton = HoverIconButton()
     private let translateButton = HoverIconButton()
+    private let videoButton = HoverIconButton()
+    private var videoButtonWidth: NSLayoutConstraint!
     private let shareButton = HoverIconButton()
+    /// Active video downloads (retained) + the top-right stack of their progress HUDs.
+    private var videoDownloads: [ObjectIdentifier: VideoDownloader] = [:]
+    private let videoHUDStack = NSStackView()
     /// Browser extensions: the controller delegate (maps Muninn tabs/windows) + the toolbar of
     /// per-extension action buttons under the address field.
     let extensionBridge = ExtensionBridge()
@@ -1316,7 +1321,7 @@ final class AppShell: NSObject {
         return NSColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
     }
     /// Black or white, whichever reads better on the given colour.
-    private static func contrastingText(_ c: NSColor) -> NSColor {
+    static func contrastingText(_ c: NSColor) -> NSColor {
         let s = c.usingColorSpace(.sRGB) ?? c
         let l = 0.299 * s.redComponent + 0.587 * s.greenComponent + 0.114 * s.blueComponent
         return l > 0.62 ? .black : .white
@@ -2346,6 +2351,81 @@ final class AppShell: NSObject {
         forwardButton.isEnabled = activeWebView.canGoForward
         updateShieldIcon()
         updateTranslateIcon()
+        updateVideoButton()
+    }
+
+    // MARK: - Video download (yt-dlp)
+
+    /// Hosts where the download-video button appears. yt-dlp supports far more; these are the ones
+    /// worth surfacing a one-click button for. (Right-click any page has no button, but the current
+    /// URL is always downloadable via the menu once the button is shown.)
+    private static let videoHosts: [String] = [
+        "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "twitch.tv",
+        "facebook.com", "fb.watch", "instagram.com", "tiktok.com", "twitter.com", "x.com",
+        "reddit.com", "streamable.com", "bilibili.com",
+    ]
+
+    /// The active tab's profile download folder (mirrors `injector.downloadFolder`).
+    private func activeDownloadFolder() -> URL {
+        let fallback = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        guard let wid = activeTab.workspaceId else { return fallback }
+        let pid = workspaces.first { $0.id == wid }?.profileId ?? defaultProfileId
+        return profiles.first { $0.id == pid }?.downloadFolder ?? fallback
+    }
+
+    private func isVideoHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return Self.videoHosts.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
+    private func updateVideoButton() {
+        let show = VideoDownloader.isAvailable && isVideoHost(activeWebView.url?.host)
+        videoButton.isHidden = !show
+        videoButtonWidth.constant = show ? 22 : 0
+    }
+
+    private func makeVideoDownloadMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Download Video", action: #selector(downloadVideoClicked), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Download Audio Only (MP3)", action: #selector(downloadAudioClicked), keyEquivalent: "").target = self
+        return menu
+    }
+
+    @objc private func downloadVideoClicked() { startVideoDownload(audioOnly: false) }
+    @objc private func downloadAudioClicked() { startVideoDownload(audioOnly: true) }
+
+    private func startVideoDownload(audioOnly: Bool) {
+        guard let url = activeWebView.url else { return }
+        guard VideoDownloader.isAvailable else {
+            showToast("Install yt-dlp to download videos (brew install yt-dlp ffmpeg)"); return
+        }
+        let dest = activeDownloadFolder()
+
+        let hud = VideoDownloadHUD(title: audioOnly ? "Downloading audio…" : "Downloading video…",
+                                   tint: currentTintColor())
+        videoHUDStack.addArrangedSubview(hud)
+
+        let dl = VideoDownloader()
+        let key = ObjectIdentifier(dl)
+        videoDownloads[key] = dl
+        hud.onCancel = { [weak self] in self?.videoDownloads[key]?.cancel() }
+        dl.onProgress = { [weak hud] frac, text in hud?.update(fraction: frac, status: text) }
+        dl.onFinished = { [weak self, weak hud] result in
+            guard let self else { return }
+            if let hud { self.videoHUDStack.removeView(hud) }
+            self.videoDownloads[key] = nil
+            switch result {
+            case .done(let file):
+                self.downloadStore.add(path: file, source: url)
+                self.flyToLibrary(icon: NSWorkspace.shared.icon(forFile: file.path))
+                self.showToast("Saved “\(file.lastPathComponent)”")
+            case .failed(let msg):
+                self.showToast("Video download failed: \(msg)")
+            case .cancelled:
+                break
+            }
+        }
+        dl.start(url: url, folder: dest, audioOnly: audioOnly)
     }
 
     // MARK: - Translate (on-device)
@@ -3078,7 +3158,7 @@ final class AppShell: NSObject {
         configureIconButton(shieldButton, symbol: "shield.lefthalf.filled",
                             action: #selector(showShieldsPanel), tip: "Shields")
         configureIconButton(settingsButton, symbol: "gearshape",
-                            action: #selector(showSettingsMenu(_:)), tip: "Settings")
+                            action: #selector(openSettings), tip: "Settings")
         // Translate — on-device page translation (no text leaves the Mac).
         configureIconButton(translateButton, symbol: "translate",
                             action: #selector(translateButtonClicked), tip: "Translate Page")
@@ -3098,10 +3178,10 @@ final class AppShell: NSObject {
         let topBar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton,
                                          toolbarDivider, shieldButton, translateButton, settingsButton])
         topBar.orientation = .horizontal
-        topBar.spacing = 2
+        topBar.spacing = 1
         topBar.alignment = .centerY
-        topBar.setCustomSpacing(7, after: reloadButton)   // breathing room around the divider
-        topBar.setCustomSpacing(7, after: toolbarDivider)
+        topBar.setCustomSpacing(4, after: reloadButton)   // breathing room around the divider
+        topBar.setCustomSpacing(4, after: toolbarDivider)
         topBar.setHuggingPriority(.required, for: .horizontal) // size to content, never compress
         topBar.translatesAutoresizingMaskIntoConstraints = false
 
@@ -3130,6 +3210,21 @@ final class AppShell: NSObject {
         sidebar.addSubview(topBar)
         sidebar.addSubview(addressField) // Arc-style: URL bar in the sidebar, under the top bar
         sidebar.addSubview(extensionBar) // extension icons on the address row, left of Share
+        // Download-video button — appears only on known video sites (collapses to 0 width otherwise).
+        videoButton.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Download video")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+        videoButton.isBordered = false
+        videoButton.restingTint = .controlAccentColor
+        videoButton.contentTintColor = .controlAccentColor
+        videoButton.target = self; videoButton.action = #selector(downloadVideoClicked)
+        videoButton.toolTip = "Download video"
+        videoButton.menu = makeVideoDownloadMenu()   // right-click → Video / Audio only
+        videoButton.isHidden = true
+        videoButton.translatesAutoresizingMaskIntoConstraints = false
+        videoButton.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        videoButtonWidth = videoButton.widthAnchor.constraint(equalToConstant: 0)
+        videoButtonWidth.isActive = true
+        sidebar.addSubview(videoButton)
         sidebar.addSubview(shareButton)  // inside the URL box, right edge
         // Library button — bottom-left, beside the workspace switcher.
         libraryButton.image = NSImage(systemSymbolName: "books.vertical", accessibilityDescription: "Library")?
@@ -3147,13 +3242,15 @@ final class AppShell: NSObject {
         NSLayoutConstraint.activate([
             toolbarDivider.heightAnchor.constraint(equalToConstant: 18),
             topBar.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 6),
-            topBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 76), // clear of the traffic lights
+            topBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 74), // clear of the traffic lights
             // no trailing constraint: the bar keeps its intrinsic size (never compresses/overlaps)
             addressField.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 10),
             addressField.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             addressField.trailingAnchor.constraint(equalTo: extensionBar.leadingAnchor, constant: -4),
-            extensionBar.trailingAnchor.constraint(equalTo: shareButton.leadingAnchor, constant: -4),
+            extensionBar.trailingAnchor.constraint(equalTo: videoButton.leadingAnchor, constant: -4),
             extensionBar.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
+            videoButton.trailingAnchor.constraint(equalTo: shareButton.leadingAnchor, constant: -2),
+            videoButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             shareButton.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -8),
             shareButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
@@ -3210,6 +3307,13 @@ final class AppShell: NSObject {
         content.addSubview(toolsButton)
         content.addSubview(sidebarSplitter) // draggable resize handles on the pane edges
         content.addSubview(toolsSplitter)
+        // Video-download progress HUDs — stacked at the web card's bottom-right (clear of the
+        // top-right toast/find bar).
+        videoHUDStack.orientation = .vertical
+        videoHUDStack.alignment = .trailing
+        videoHUDStack.spacing = 8
+        videoHUDStack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(videoHUDStack)
         window.contentView = content
 
         sidebarLeadingConstraint = sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 0)
@@ -3235,6 +3339,8 @@ final class AppShell: NSObject {
             toolsWidthConstraint,
             toolsButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 6),
             toolsButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
+            videoHUDStack.trailingAnchor.constraint(equalTo: webContainer.trailingAnchor, constant: -16),
+            videoHUDStack.bottomAnchor.constraint(equalTo: webContainer.bottomAnchor, constant: -16),
         ])
 
         // Resize handles: a thin draggable strip centred on each pane's inner edge.
@@ -3246,7 +3352,9 @@ final class AppShell: NSObject {
         toolsSplitter.onDragEnd = { [weak self] in self?.persist() }
         toolsSplitter.isHidden = true   // tools sidebar starts hidden
         NSLayoutConstraint.activate([
-            sidebarSplitter.topAnchor.constraint(equalTo: content.topAnchor),
+            // Start below the top nav cluster so the handle never overlaps (and steals clicks from)
+            // the rightmost toolbar button (e.g. the settings gear) when the sidebar is narrow.
+            sidebarSplitter.topAnchor.constraint(equalTo: content.topAnchor, constant: 44),
             sidebarSplitter.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             sidebarSplitter.centerXAnchor.constraint(equalTo: sidebar.trailingAnchor),
             sidebarSplitter.widthAnchor.constraint(equalToConstant: 8),
@@ -3502,7 +3610,7 @@ final class AppShell: NSObject {
         b.target = self
         b.action = action
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        b.widthAnchor.constraint(equalToConstant: 22).isActive = true
         b.heightAnchor.constraint(equalToConstant: 26).isActive = true
     }
 
@@ -3516,7 +3624,7 @@ final class AppShell: NSObject {
         b.target = self; b.action = action
         b.toolTip = tip
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        b.widthAnchor.constraint(equalToConstant: 22).isActive = true
         b.heightAnchor.constraint(equalToConstant: 26).isActive = true
     }
 

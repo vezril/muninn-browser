@@ -162,6 +162,7 @@ final class LibraryPane: NSView {
         let actions = NSStackView(views: [reveal, remove]); actions.orientation = .horizontal; actions.spacing = 2
 
         row.onDoubleClick = { [weak self] in self?.open(r) }
+        row.menu = downloadMenu(for: r)   // right-click: Open / Show in Finder / Copy Path / Trash / Remove
         for s in [icon, labels, actions] { s.translatesAutoresizingMaskIntoConstraints = false; row.addSubview(s) }
         if !r.exists { name.textColor = .tertiaryLabelColor }
         NSLayoutConstraint.activate([
@@ -199,6 +200,7 @@ final class LibraryPane: NSView {
     private func mediaTile(_ r: DownloadRecord) -> NSView {
         let tile = HoverRow()
         tile.onDoubleClick = { [weak self] in self?.open(r) }
+        tile.menu = downloadMenu(for: r)
         tile.translatesAutoresizingMaskIntoConstraints = false
         let thumb = NSImageView()
         thumb.imageScaling = .scaleProportionallyUpOrDown
@@ -266,6 +268,43 @@ final class LibraryPane: NSView {
     private func open(_ r: DownloadRecord) { if r.exists { NSWorkspace.shared.open(r.url) } else { NSSound.beep() } }
     @objc private func revealClicked(_ s: NSButton) { if let r = recordFor(s), r.exists { NSWorkspace.shared.activateFileViewerSelecting([r.url]) } }
     @objc private func removeClicked(_ s: NSButton) { if let r = recordFor(s) { store.remove(r.id); select(segmented.selectedSegment) } }
+
+    // MARK: right-click menu (Finder-style)
+
+    private func downloadMenu(for r: DownloadRecord) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false   // respect our per-item enabled state
+        func item(_ title: String, _ action: Selector, enabled: Bool = true) -> NSMenuItem {
+            let m = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            m.target = self; m.representedObject = r.id.uuidString; m.isEnabled = enabled
+            return m
+        }
+        menu.addItem(item("Open", #selector(menuOpen(_:)), enabled: r.exists))
+        menu.addItem(item("Show in Finder", #selector(menuReveal(_:)), enabled: r.exists))
+        menu.addItem(item("Copy Path", #selector(menuCopyPath(_:)), enabled: r.exists))
+        menu.addItem(.separator())
+        menu.addItem(item("Move to Trash", #selector(menuTrash(_:)), enabled: r.exists))
+        menu.addItem(item("Remove from List", #selector(menuRemoveFromList(_:))))
+        return menu
+    }
+
+    private func record(from s: NSMenuItem) -> DownloadRecord? {
+        guard let raw = s.representedObject as? String, let id = UUID(uuidString: raw) else { return nil }
+        return store.records.first { $0.id == id }
+    }
+    @objc private func menuOpen(_ s: NSMenuItem) { if let r = record(from: s) { open(r) } }
+    @objc private func menuReveal(_ s: NSMenuItem) { if let r = record(from: s), r.exists { NSWorkspace.shared.activateFileViewerSelecting([r.url]) } }
+    @objc private func menuCopyPath(_ s: NSMenuItem) {
+        guard let r = record(from: s) else { return }
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(r.url.path, forType: .string)
+    }
+    @objc private func menuTrash(_ s: NSMenuItem) {
+        guard let r = record(from: s) else { return }
+        NSWorkspace.shared.recycle([r.url]) { [weak self] _, _ in     // recoverable (Trash), not a hard delete
+            DispatchQueue.main.async { self?.store.remove(r.id); self?.select(self?.segmented.selectedSegment ?? 0) }
+        }
+    }
+    @objc private func menuRemoveFromList(_ s: NSMenuItem) { if let r = record(from: s) { store.remove(r.id); select(segmented.selectedSegment) } }
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short; return f
