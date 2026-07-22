@@ -78,6 +78,7 @@ final class AppShell: NSObject {
     private let reloadButton = HoverIconButton()
     private let settingsButton = HoverIconButton()
     private let shieldButton = HoverIconButton()
+    private let translateButton = HoverIconButton()
     private let shareButton = HoverIconButton()
     /// Browser extensions: the controller delegate (maps Muninn tabs/windows) + the toolbar of
     /// per-extension action buttons under the address field.
@@ -214,6 +215,7 @@ final class AppShell: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         installKeyMonitor()
         installMouseMonitor()
+        PageTranslator.shared.attach(to: window)   // offscreen SwiftUI host for on-device translation
         // Auto-Archive sweep every few minutes (also runs on each tab switch).
         archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -1868,6 +1870,7 @@ final class AppShell: NSObject {
             .init(id: "copyURL", title: "Copy URL", symbol: "link", shortcut: sc(.copyURL)),
             .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
             .init(id: "taskManager", title: "Task Manager", symbol: "gauge.with.dots.needle.bottom.50percent", shortcut: nil),
+            .init(id: "translatePage", title: "Translate Page", symbol: "translate", shortcut: nil),
             .init(id: "askModel", title: "Ask Local Model…", symbol: "sparkles", shortcut: nil),
         ]
         if ObsidianSettings.isConfigured {
@@ -1966,6 +1969,7 @@ final class AppShell: NSObject {
         case "copyURL":       copyActiveURL()
         case "settings":      openSettings()
         case "taskManager":   openTaskManager()
+        case "translatePage": translateButtonClicked()
         case "inspect":       inspectActiveTab()
         case "viewSource":    viewSource(of: activeWebView)
         case "askModel":      openAskModel()
@@ -2249,7 +2253,96 @@ final class AppShell: NSObject {
         backButton.isEnabled = activeWebView.canGoBack
         forwardButton.isEnabled = activeWebView.canGoForward
         updateShieldIcon()
+        updateTranslateIcon()
     }
+
+    // MARK: - Translate (on-device)
+
+    /// Reflect the active page's translated state on the toolbar button.
+    private func updateTranslateIcon() {
+        let wv = activeWebView
+        wv.evaluateJavaScript(PageTranslationScript.isTranslated) { [weak self] result, _ in
+            MainActor.assumeIsolated {
+                guard let self, self.activeWebView === wv else { return }
+                let on = (result as? Bool) ?? false
+                self.translateButton.image = NSImage(systemSymbolName: on ? "character.book.closed.fill" : "translate",
+                                                     accessibilityDescription: "Translate Page")?
+                    .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+                let tint: NSColor = on ? .controlAccentColor : .secondaryLabelColor
+                self.translateButton.restingTint = tint
+                self.translateButton.contentTintColor = tint
+                self.translateButton.toolTip = on ? "Show Original" : "Translate Page"
+            }
+        }
+    }
+
+    @objc func translateButtonClicked() {
+        let wv = activeWebView
+        wv.evaluateJavaScript(PageTranslationScript.isTranslated) { [weak self] result, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if (result as? Bool) ?? false { self.revertActivePage() }
+                else { self.translateActivePage() }
+            }
+        }
+    }
+
+    /// Restore the page's original text.
+    private func revertActivePage() {
+        activeWebView.evaluateJavaScript(PageTranslationScript.revert) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateTranslateIcon() }
+        }
+    }
+
+    /// Extract the page's text, detect its language, translate on-device into the preferred website
+    /// language, and reinject. No page content leaves the machine.
+    func translateActivePage() {
+        let wv = activeWebView
+        let targetCode = AppSettings.websiteLanguage.isEmpty ? "en" : AppSettings.websiteLanguage
+        wv.evaluateJavaScript(PageTranslationScript.extract) { [weak self] result, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let json = result as? String,
+                      let data = json.data(using: .utf8),
+                      let items = try? JSONDecoder().decode([TextNode].self, from: data),
+                      !items.isEmpty else {
+                    self.showToast("Nothing to translate on this page"); return
+                }
+                let texts = items.map { $0.text }
+                // Detect the page language from a sample; skip if it's already the target.
+                let sample = texts.prefix(40).joined(separator: " ")
+                let detected = PageTranslator.detectLanguage(sample)
+                if let detected, Locale.Language(identifier: detected).languageCode?.identifier
+                    == Locale.Language(identifier: targetCode).languageCode?.identifier {
+                    let name = Locale.current.localizedString(forLanguageCode: targetCode) ?? "that language"
+                    self.showToast("This page is already in \(name.capitalized)")
+                    return
+                }
+                self.showToast("Translating…", record: false)
+                Task { @MainActor in
+                    do {
+                        let translated = try await PageTranslator.shared.translate(texts, to: targetCode, from: detected)
+                        guard self.activeWebView === wv else { return }   // tab switched away
+                        let pairs = zip(items, translated).map { ["id": $0.id, "t": $1] as [String: Any] }
+                        let pdata = try JSONSerialization.data(withJSONObject: pairs)
+                        let pjson = String(decoding: pdata, as: UTF8.self)
+                        wv.evaluateJavaScript(PageTranslationScript.reinject(pairsJSON: pjson)) { _, _ in
+                            MainActor.assumeIsolated { self.updateTranslateIcon() }
+                        }
+                        let from = detected.flatMap { Locale.current.localizedString(forLanguageCode: $0) } ?? "the page"
+                        self.showToast("Translated from \(from.capitalized)")
+                    } catch PageTranslator.TranslateError.unsupported(let lang) {
+                        self.showToast("Translation for \(lang.capitalized) isn't available on this Mac")
+                    } catch {
+                        self.showToast("Couldn't translate this page")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Decoded shape of a `PageTranslationScript.extract` entry.
+    private struct TextNode: Decodable { let id: Int; let text: String }
 
     // MARK: - Shields
 
@@ -2761,6 +2854,9 @@ final class AppShell: NSObject {
                             action: #selector(showShieldsPanel), tip: "Shields")
         configureIconButton(settingsButton, symbol: "gearshape",
                             action: #selector(showSettingsMenu(_:)), tip: "Settings")
+        // Translate — on-device page translation (no text leaves the Mac).
+        configureIconButton(translateButton, symbol: "translate",
+                            action: #selector(translateButtonClicked), tip: "Translate Page")
 
         // Browser-extension action buttons — on the address row (full width, no traffic-light
         // offset), so a variable number of extension icons never overflows the narrow top strip.
@@ -2775,7 +2871,7 @@ final class AppShell: NSObject {
 
         // Top bar: [toggle back forward reload | shield settings]
         let topBar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton,
-                                         toolbarDivider, shieldButton, settingsButton])
+                                         toolbarDivider, shieldButton, translateButton, settingsButton])
         topBar.orientation = .horizontal
         topBar.spacing = 2
         topBar.alignment = .centerY
