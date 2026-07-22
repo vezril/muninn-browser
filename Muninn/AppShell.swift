@@ -289,13 +289,18 @@ final class AppShell: NSObject {
     /// A cross-site link click in a pinned/favourite tab opens a Peek instead of navigating
     /// the anchored tab away from its home.
     private func decideNavigation(for tab: BrowserTab, _ action: WKNavigationAction) -> WKNavigationActionPolicy {
-        // Shields: strip tracking query params from main-frame navigations, then re-load clean.
         if let url = action.request.url, url.scheme?.hasPrefix("http") == true,
-           action.targetFrame?.isMainFrame == true,
-           shields.stripQueryParams, shields.shieldsUp(for: url.host),
-           let cleaned = QueryStripper.strip(url) {
-            DispatchQueue.main.async { [weak self] in self?.loadCleaned(cleaned, in: tab) }
-            return .cancel
+           action.targetFrame?.isMainFrame == true, shields.shieldsUp(for: url.host) {
+            // Shields: debounce known bounce-trackers → jump straight to the destination.
+            if shields.debounce, let dest = Debouncer.destination(for: url) {
+                DispatchQueue.main.async { [weak self] in self?.loadCleaned(dest, in: tab) }
+                return .cancel
+            }
+            // Shields: strip tracking query params, then re-load clean.
+            if shields.stripQueryParams, let cleaned = QueryStripper.strip(url) {
+                DispatchQueue.main.async { [weak self] in self?.loadCleaned(cleaned, in: tab) }
+                return .cancel
+            }
         }
         guard tab.kind != .regular,
               action.navigationType == .linkActivated,
