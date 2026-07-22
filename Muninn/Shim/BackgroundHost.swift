@@ -159,10 +159,12 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         // Fork-gate diagnostic: worker error text (class + short message). Logged only when gated.
         if (env["ns"] as? String) == "__forkdiag" {
             if ProcessInfo.processInfo.environment["MUNINN_FORKGATE"] != nil {
-                let txt = ((env["args"] as? [Any])?.first as? String) ?? "?"
+                let raw = ((env["args"] as? [Any])?.first as? String) ?? "?"
+                // Redact long token-like runs (selectors / tokens) before writing.
+                let txt = raw.replacingOccurrences(of: "[A-Za-z0-9_+/=-]{20,}", with: "<redacted>", options: .regularExpression)
                 let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                     .appendingPathComponent("Muninn/fork-gate.log")
-                let line = "\(Date().ISO8601Format()) worker error: \(txt)\n"
+                let line = "\(Date().ISO8601Format()) worker: \(txt)\n"
                 if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(Data(line.utf8)); try? fh.close() }
                 else { try? line.data(using: .utf8)?.write(to: u) }
             }

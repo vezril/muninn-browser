@@ -239,3 +239,23 @@ bootstrap. Gates were paused here (13 total; Calvin's login fatigue) — resume 
 auth-service-init work with a SINGLE verification gate, not incremental diagnostic gates.
 
 All fork-gate instrumentation remains behind `MUNINN_FORKGATE` (dormant in normal use).
+
+## GATE 14–15 (2026-07-22) — fix attempt failed; consume still throws pre-fetch; error unreachable
+
+Broadened the worker capture to console error/warn/info + auth/fork-tagged logs (redacted):
+**zero** worker log lines — Proton's production logger (`nc.*`) is a no-op, nothing hits console.
+So the actual exception is unreachable via instrumentation (canned response + silent logger).
+
+Static find: `consumeFork` calls `onForkConsumeStart:async()=>{if(ta.hasSession())throw ub(ug.CONFLICT);…}`
+BEFORE the pull — throws if the auth store already has a session. Hypothesis: a stale persisted
+session (`ps` in `storage.local.enc`, which MUNINN_FRESH did NOT clear) → hasSession() true → CONFLICT.
+**Fix applied:** ExtensionStorage.init drops storage.local.enc under MUNINN_FRESH. **Gate 15 result:
+still no fetch after consume** → CONFLICT was NOT the cause (or hasSession() is set some other way).
+
+So the throw is in the pull path (`uy → uh → (e.pullFork ?? default)(t)`; auth service `pullFork = gy`)
+and fires synchronously before any `self.fetch` (no worker probe post-consume). Next real lead:
+trace `gy` (the auth service pullFork) and the api client `t`; but the definitive unblock is the
+**exact exception + stack**, which needs a **Web Inspector session on the background host worker**
+(MUNINN_E6_GATE enables `isInspectable`) — set a breakpoint at the consume catch / pullFork and read
+the real error. 15 gates done; guess-and-gate has stopped converging. Do the inspector read (or more
+static `gy` tracing) BEFORE the next fix attempt.

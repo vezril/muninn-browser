@@ -32,7 +32,17 @@ final class ExtensionStorage {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.fileURL = dir.appendingPathComponent("storage.local.enc")
         self.key = inMemoryOnly ? SymmetricKey(size: .bits256) : Self.storageKey(in: dir)
-        if !inMemoryOnly { self.local = loadLocal() }
+        if !inMemoryOnly {
+            // MUNINN_FRESH: drop the extension's persisted session (`ps` in storage.local) so the
+            // auth store doesn't hydrate a stale session → `hasSession()` false → the fork consume's
+            // `onForkConsumeStart` doesn't throw CONFLICT. A truly fresh gate must start session-less.
+            if ProcessInfo.processInfo.environment["MUNINN_FRESH"] != nil {
+                try? FileManager.default.removeItem(at: fileURL)
+                self.local = [:]
+            } else {
+                self.local = loadLocal()
+            }
+        }
     }
 
     // MARK: - the storage.* method surface

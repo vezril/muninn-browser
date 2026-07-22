@@ -49,14 +49,24 @@
     var r = e && e.reason;
     forkDiag("reject " + (r && r.name ? r.name + ": " : "") + ((r && r.message) || String(r)));
   });
-  var _consoleError = console.error;
-  console.error = function () {
+  function _fmtArgs(args) {
+    return Array.prototype.map.call(args, function (x) {
+      return x && x.message ? (x.name ? x.name + ": " : "") + x.message : String(x);
+    }).join(" ");
+  }
+  // Wrap error/warn/info so Proton's own logger (nc.warn/info → console) surfaces the real
+  // auth/fork failure. `log` is filtered to auth/fork-tagged lines to avoid noise.
+  ["error", "warn", "info"].forEach(function (level) {
+    var orig = console[level];
+    console[level] = function () { try { forkDiag(level + " " + _fmtArgs(arguments)); } catch (_) {} return orig.apply(console, arguments); };
+  });
+  var _consoleLog = console.log;
+  console.log = function () {
     try {
-      forkDiag("console.error " + Array.prototype.map.call(arguments, function (x) {
-        return x && x.message ? (x.name ? x.name + ": " : "") + x.message : String(x);
-      }).join(" "));
+      var s = _fmtArgs(arguments);
+      if (/AuthService|[Ff]ork|nauthorized|permission|Error|scope/.test(s)) forkDiag("log " + s);
     } catch (_) {}
-    return _consoleError.apply(console, arguments);
+    return _consoleLog.apply(console, arguments);
   };
 
   // Chrome APIs accept an optional trailing callback OR return a Promise.
