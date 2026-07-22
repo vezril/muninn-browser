@@ -52,17 +52,17 @@ final class ToolsSidebar: NSView {
         switcher.arrangedSubviews.forEach { $0.removeFromSuperview() }
         buttons.removeAll()
         for t in tools {
-            let b = NSButton(title: " " + t.title,
-                             image: NSImage(systemSymbolName: t.symbol, accessibilityDescription: nil)
+            let b = NSButton(image: NSImage(systemSymbolName: t.symbol, accessibilityDescription: t.title)
                                 ?? NSImage(), target: self, action: #selector(switchTapped(_:)))
-            b.imagePosition = .imageLeading
             b.isBordered = false
-            b.font = .systemFont(ofSize: 11, weight: .medium)
+            b.toolTip = t.title
+            b.imageScaling = .scaleProportionallyDown
             b.wantsLayer = true
             b.layer?.cornerRadius = 6
             b.identifier = NSUserInterfaceItemIdentifier(t.id)
             b.translatesAutoresizingMaskIntoConstraints = false
-            b.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            b.widthAnchor.constraint(equalToConstant: 34).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 26).isActive = true
             buttons[t.id] = b
             switcher.addArrangedSubview(b)
         }
