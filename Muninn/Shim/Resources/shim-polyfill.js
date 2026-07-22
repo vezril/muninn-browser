@@ -38,6 +38,27 @@
     self.postMessage({ __shim: "audit", ns: ns, member: member, kind: kind, stack: (new Error()).stack });
   }
 
+  // Fork-gate diagnostic: forward worker error TEXT (class + short message, truncated) to native.
+  // Native only logs it when MUNINN_FORKGATE is set. Helps see what consumeFork actually throws.
+  function forkDiag(text) { try { callNative("__forkdiag", "error", [String(text).slice(0, 160)]); } catch (_) {} }
+  self.addEventListener("error", function (e) {
+    var er = e && e.error;
+    forkDiag((er && er.name ? er.name + ": " : "") + ((er && er.message) || (e && e.message) || e));
+  });
+  self.addEventListener("unhandledrejection", function (e) {
+    var r = e && e.reason;
+    forkDiag("reject " + (r && r.name ? r.name + ": " : "") + ((r && r.message) || String(r)));
+  });
+  var _consoleError = console.error;
+  console.error = function () {
+    try {
+      forkDiag("console.error " + Array.prototype.map.call(arguments, function (x) {
+        return x && x.message ? (x.name ? x.name + ": " : "") + x.message : String(x);
+      }).join(" "));
+    } catch (_) {}
+    return _consoleError.apply(console, arguments);
+  };
+
   // Chrome APIs accept an optional trailing callback OR return a Promise.
   function dual(ns, method) {
     return function () {

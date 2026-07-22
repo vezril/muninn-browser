@@ -156,6 +156,18 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         guard let host, let env = message.body as? [String: Any] else {
             return (nil, "bad envelope")
         }
+        // Fork-gate diagnostic: worker error text (class + short message). Logged only when gated.
+        if (env["ns"] as? String) == "__forkdiag" {
+            if ProcessInfo.processInfo.environment["MUNINN_FORKGATE"] != nil {
+                let txt = ((env["args"] as? [Any])?.first as? String) ?? "?"
+                let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                    .appendingPathComponent("Muninn/fork-gate.log")
+                let line = "\(Date().ISO8601Format()) worker error: \(txt)\n"
+                if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(Data(line.utf8)); try? fh.close() }
+                else { try? line.data(using: .utf8)?.write(to: u) }
+            }
+            return (NSNull(), nil)
+        }
         // Native fetch proxy (host-only route — the page's IsolatedBridge has no such
         // branch, so content worlds can't reach it). Async: awaits URLSession.
         if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "request" {
@@ -165,6 +177,13 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
         if (env["ns"] as? String) == "__fetch", (env["method"] as? String) == "probe" {
             let h = ((env["args"] as? [Any])?.first as? String) ?? "?"
             host.broker.onFetchProbe?("ENTRY", h, 0, false)
+            if ProcessInfo.processInfo.environment["MUNINN_FORKGATE"] != nil {
+                let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                    .appendingPathComponent("Muninn/fork-gate.log")
+                let line = "\(Date().ISO8601Format()) worker fetch probe host=\(h)\n"
+                if let fh = try? FileHandle(forWritingTo: u) { fh.seekToEndOfFile(); fh.write(Data(line.utf8)); try? fh.close() }
+                else { try? line.data(using: .utf8)?.write(to: u) }
+            }
             return (NSNull(), nil)
         }
         do { return (try host.broker.handle(env), nil) }

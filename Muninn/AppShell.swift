@@ -237,9 +237,15 @@ final class AppShell: NSObject {
             else { loadLanding(activeTab) } // plain browser: the landing page
 
         }
-        // MUNINN_FRESH: wipe Muninn's OWN default website data (its store — NOT the
-        // system browser) so an account login is fresh and actually forks.
+        // MUNINN_FRESH: wipe Muninn's OWN website data (its stores — NOT the system browser) so
+        // an account login is fresh and actually forks. Covers the default store AND the native
+        // fetch-proxy's persistent cookie jar (which otherwise survives across gate runs and makes
+        // the account fork inconsistently).
         if env["MUNINN_FRESH"] != nil {
+            if let jar = HTTPCookieStorage.sharedCookieStorage(forGroupContainerIdentifier: "muninn.ext.fetchproxy").cookies {
+                let proxyStore = HTTPCookieStorage.sharedCookieStorage(forGroupContainerIdentifier: "muninn.ext.fetchproxy")
+                for c in jar { proxyStore.deleteCookie(c) }
+            }
             WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                                                     modifiedSince: .distantPast) { proceed() }
         } else { proceed() }

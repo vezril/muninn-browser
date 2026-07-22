@@ -302,8 +302,32 @@ final class MessageBroker: NSObject {
         let type = (message as? [String: Any])?["type"] as? String ?? "?"
         let host = senderURL.flatMap { URL(string: $0)?.host } ?? "?"
         onExternalRelay?(type, host, false)
+        let forkGate = ProcessInfo.processInfo.environment["MUNINN_FORKGATE"] != nil
+        func forkLog(_ s: String) {
+            let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Muninn/fork-gate.log")
+            let line = "\(Date().ISO8601Format()) \(s)\n"
+            if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+            else { try? line.data(using: .utf8)?.write(to: url) }
+        }
+        // Fork-gate diagnostic: for the `fork` message, log the payload's KEY NAMES only (never
+        // values) so we can see whether `selector`/`state`/`keyPassword` reach the relay.
+        if type == "fork", forkGate {
+            let msgKeys = (message as? [String: Any])?.keys.sorted().joined(separator: ",") ?? "-"
+            let payloadKeys = ((message as? [String: Any])?["payload"] as? [String: Any])?
+                .keys.sorted().joined(separator: ",") ?? "<none>"
+            forkLog("fork relay: msgKeys=[\(msgKeys)] payloadKeys=[\(payloadKeys)]")
+        }
         let result = await route(key: "runtime.onMessageExternal", message: message, sender: sender, senderURL: senderURL)
         onExternalRelay?(type, host, !(result is NSNull) && result != nil)
+        // Fork-gate diagnostic: the consume RESPONSE (carries the wrapped error text). Long
+        // token-like runs (selectors / tokens) redacted so no secret is written.
+        if type == "fork", forkGate {
+            let raw = String(describing: result).prefix(400)
+            let redacted = String(raw).replacingOccurrences(
+                of: "[A-Za-z0-9_+/=-]{20,}", with: "<redacted>", options: .regularExpression)
+            forkLog("fork response: \(redacted)")
+        }
         return result
     }
 

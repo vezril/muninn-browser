@@ -60,6 +60,23 @@ actor NativeFetchProxy {
         guard let url = URL(string: urlString) else { return FetchResult(error: "bad url") }
         guard Self.isAllowed(url) else { return FetchResult(error: "host not allowlisted") }
 
+        // Fork-gate diagnostic: log only host + path with the trailing id (selector) REDACTED, and
+        // the resulting status/error. NEVER logs headers or body (cookies / session tokens).
+        let forkGate = ProcessInfo.processInfo.environment["MUNINN_FORKGATE"] != nil
+        func forkLog(_ msg: String) {
+            guard forkGate else { return }
+            let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Muninn/fork-gate.log")
+            let line = "\(Date().ISO8601Format()) \(msg)\n"
+            if let h = try? FileHandle(forWritingTo: u) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+            else { try? line.data(using: .utf8)?.write(to: u) }
+        }
+        if forkGate, url.path.contains("/sessions/forks") {
+            let comps = url.pathComponents
+            let redacted = comps.count > 1 ? comps.dropLast().joined(separator: "/") + "/<redacted>" : url.path
+            forkLog("proxy \(method.uppercased()) \(url.host ?? "?")\(redacted)")
+        }
+
         var req = URLRequest(url: url)
         req.httpMethod = method.uppercased()
         for (k, v) in headers where !Self.forbiddenHeaders.contains(k.lowercased()) {
@@ -70,6 +87,7 @@ actor NativeFetchProxy {
         do {
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse else { return FetchResult(error: "non-http response") }
+            if forkGate, url.path.contains("/sessions/forks") { forkLog("proxy -> status \(http.statusCode)") }
             // Final-hop allowlist guard (defense-in-depth beyond the redirect delegate).
             if let finalURL = http.url, !Self.isAllowed(finalURL) { return FetchResult(error: "redirected off allowlist") }
             var headerPairs: [[String]] = []
@@ -86,6 +104,7 @@ actor NativeFetchProxy {
         } catch is CancellationError {
             return FetchResult(error: "aborted")
         } catch {
+            if forkGate, url.path.contains("/sessions/forks") { forkLog("proxy -> error \(String(describing: error))") }
             return FetchResult(error: String(describing: error))
         }
     }

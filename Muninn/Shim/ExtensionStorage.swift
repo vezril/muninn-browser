@@ -38,7 +38,36 @@ final class ExtensionStorage {
     // MARK: - the storage.* method surface
 
     /// keys may be nil (all), a String, an [String], or a { key: default } dict.
+    // MARK: - Fork-gate diagnostics (ground-rule-1 safe: never logs values, only a stable
+    // non-reversible tag of the key + HIT/MISS + whether stored localState is empty). Gated on
+    // MUNINN_FORKGATE so normal runs write nothing.
+    private static let forkGateOn = ProcessInfo.processInfo.environment["MUNINN_FORKGATE"] != nil
+    private func forkTag(_ s: String) -> String {
+        SHA256.hash(data: Data(s.utf8)).prefix(3).map { String(format: "%02x", $0) }.joined()
+    }
+    private func forkLog(_ msg: String) {
+        guard Self.forkGateOn else { return }
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Muninn/fork-gate.log")
+        let line = "\(Date().ISO8601Format()) \(msg)\n"
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
+        else { try? line.data(using: .utf8)?.write(to: url) }
+    }
+    /// Is a session key a fork-state key (`f` + a ~43-char state nonce)?
+    private func isForkKey(_ k: String) -> Bool { k.hasPrefix("f") && k.count > 20 }
+
     func get(_ area: Area, _ keys: Any?) -> [String: Any] {
+        if Self.forkGateOn, area == .session {
+            func note(_ k: String) {
+                guard isForkKey(k) else { return }
+                let present = session[k] != nil
+                let empty = (session[k] as? String).map { $0 == "{}" || $0.isEmpty } ?? false
+                let stored = session.keys.filter { isForkKey($0) }.map { forkTag($0) }.joined(separator: ",")
+                forkLog("consume get fork tag=\(forkTag(k)) -> \(present ? "HIT localState=\(empty ? "EMPTY" : "present")" : "MISS") | stored=[\(stored)]")
+            }
+            if let s = keys as? String { note(s) }
+            else if let arr = keys as? [String] { arr.forEach(note) }
+        }
         let store = area == .local ? local : session
         switch keys {
         case nil, is NSNull:
@@ -63,6 +92,12 @@ final class ExtensionStorage {
             for (k, v) in items { local[k] = v }
             persistLocal()
         } else {
+            if Self.forkGateOn {
+                for k in items.keys where isForkKey(k) {
+                    let empty = (items[k] as? String).map { $0 == "{}" || $0.isEmpty } ?? false
+                    forkLog("store fork tag=\(forkTag(k)) localState=\(empty ? "EMPTY" : "present")")
+                }
+            }
             for (k, v) in items { session[k] = v }
         }
     }

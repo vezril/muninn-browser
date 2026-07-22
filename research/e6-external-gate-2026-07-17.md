@@ -173,3 +173,69 @@ extension to INITIATE the fork (popup behavior). This couples E6's login complet
 **NOT abandon-D4** — detection, bus, injection, and the fetch proxy all work; the gap is
 that nothing initiates the fork. The onboarding path was a detour; the real sign-in is
 popup-driven (which is also the daily-driver UX).
+
+---
+
+## GATE 10 (2026-07-22) — unified root cause: background auth service uninitialized
+
+Six live sign-in gates (Calvin at keyboard; ground rule 1 held — the fork-gate log is
+tag/HIT-MISS/keys-only, never values). Instrumented (all behind `MUNINN_FORKGATE`):
+storage session `f<state>` store/get (SHA tag + HIT/MISS + localState empty?), the
+`onMessageExternal` fork relay (payload KEY NAMES only), the native fetch proxy
+(`/sessions/forks` path with selector REDACTED + status), and the worker fetch **probe**
+(host only, fires before the allowlist on every worker `fetch`).
+
+**Findings (each confirmed live):**
+1. **State plumbing WORKS.** `consume get fork tag=X -> HIT` — `payload.state` matches a
+   stored `f<state>`. The old "state mismatch" hypothesis is refuted for this path.
+2. **`localState` is a red herring.** `uh` validates
+   `("extension"===mode || (localState && key)) && selector && state`. Mode IS "extension",
+   so the localState/key clause short-circuits. Our `"{}"` never mattered.
+3. **The fork payload is COMPLETE.** relay log:
+   `payloadKeys=[keyPassword,offlineKey,persistent,selector,state,trusted]`. So `selector`
+   and `state` are both present → `uh` should PASS.
+4. **The pullFork fetch NEVER FIRES.** After the consume HIT, there is **no worker fetch
+   probe** at all. The only probe in the whole run is host=`<extension-id>` (a boot-time
+   request to a relative URL, resolved against the worker origin `muninn-ext://<id>`).
+   So `consumeFork` throws AFTER reading `f<state>` but BEFORE any network call.
+
+**Root cause (unified with the popup blank):** the background's **auth service / API client
+is never initialized** in our flow. `consumeFork → uy → uh` uses the auth service's API
+client (`t`/`e.api`); uninitialized, its base URL is empty (hence the one boot request going
+to the extension origin, not `account.proton.me`), so the pull throws before fetching. This
+is the SAME uninitialized-auth-service state the popup waits on (E7 "app-root empty"). One
+blocker, two symptoms.
+
+**Next step (the real one now):** initialize the background auth service so its API client is
+configured (base = SSO_URL). In the real extension the popup sends **`AUTH_INIT`** on open
+(handler `S = async (e,{options}) => (options.forceLock=…, await e.service.auth.init(options), e.getState())`).
+Our fork-init flow never sends it. Try: send `AUTH_INIT` to the background before the fork
+consume (decode the options the popup sends), then re-gate — expect the pullFork to fire
+(worker probe host=account.proton.me → proxy `/sessions/forks/<redacted>` → status). If
+`auth.init` needs a session we don't have yet, that's the chicken/egg to solve (it likely
+inits the client pre-session for exactly the fork flow). Fork-gate instrumentation is in
+place (behind `MUNINN_FORKGATE`) for the next run.
+
+## GATE 11–13 (2026-07-22) — root cause CONFIRMED: API client undefined (auth service uninit)
+
+Added credential-safe capture: worker error hook (console.error / error / unhandledrejection →
+native, truncated), and the consume RESPONSE at the relay (token-runs redacted). Results:
+- **No worker error surfaced** — Proton's message framework catches the throw internally.
+- **Consume response** = `{type:error, payload:{title:"Something went wrong",
+  message:"Unable to sign in to Proton Pass. Unknown error occurred"}}` — the handler `_` does
+  `catch(e){throw ub(ug.ERROR,e)}`, and `ub` maps ANY error to that CANNED message, discarding `e`.
+- Full consume handler `_`: getItem `f<state>` (HIT) → `keyPassword` present → `I.consumeFork(...)`
+  → **throws before any fetch** (no worker fetch probe for account.proton.me post-consume).
+
+`consumeFork → uy → uh` calls `(e.pullFork ?? (({selector})=>{…; r(t)}))(t)` where `r` is the API
+client. The API client is **undefined** (auth service not initialized), so `r(t)` throws a TypeError
+before the network call. Canned-error mapping hides it. This is the SAME uninitialized-auth-service
+state that leaves the E7 popup blank.
+
+**Verdict:** the remaining work is E7-scale — initialize the background auth service so its API
+client (base = SSO_URL) exists, which unblocks BOTH the fork consume AND the popup render. This is
+NOT a quick patch: `auth.init` (AUTH_INIT handler `S`) likely pulls in the crypto worker + session
+bootstrap. Gates were paused here (13 total; Calvin's login fatigue) — resume as focused heads-down
+auth-service-init work with a SINGLE verification gate, not incremental diagnostic gates.
+
+All fork-gate instrumentation remains behind `MUNINN_FORKGATE` (dormant in normal use).
