@@ -70,6 +70,13 @@ final class InjectionCoordinator: NSObject {
         // Profiles: an isolated cookie/login/storage jar per profile (nil = the default store).
         if let dataStore { config.websiteDataStore = dataStore }
         config.setURLSchemeHandler(ExtensionSchemeHandler(), forURLScheme: PassBundle.scheme)
+        // Browser extensions: attach the shared WKWebExtensionController so installed extensions'
+        // content scripts / background / actions run in this tab. Gated on there being an enabled
+        // extension — the controller injects a `browser` global into every page's MAIN world, so
+        // we leave it off (preserving the Pass shim's clean MAIN world, S2) until the user opts in.
+        if ExtensionManager.shared.hasEnabledExtensions {
+            config.webExtensionController = ExtensionManager.shared.controller
+        }
         // Developer Mode: enable WKPreferences developer extras so the in-app Web Inspector can
         // display (private KVC key; sets the backing ivar, so it can't raise for an unknown key).
         if AppSettings.developerMode { config.preferences.setValue(true, forKey: "developerExtrasEnabled") }

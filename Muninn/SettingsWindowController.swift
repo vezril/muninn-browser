@@ -11,8 +11,10 @@ final class SettingsWindowController: NSWindowController {
     private let sections: [(title: String, icon: String)] = [
         ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
         ("Calendars", "calendar"), ("Models", "cpu"), ("Obsidian", "book.closed"),
-        ("Shields", "shield.lefthalf.filled"), ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
+        ("Shields", "shield.lefthalf.filled"), ("Extensions", "puzzlepiece.extension"),
+        ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
+    private let extensionsList = NSStackView()
     private let vaultPathLabel = NSTextField(labelWithString: "")
     private let notesPathLabel = NSTextField(labelWithString: "")
     private let routingList = NSStackView()
@@ -101,7 +103,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, shieldsView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, shieldsView, extensionsView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -468,6 +470,147 @@ final class SettingsWindowController: NSWindowController {
         for rule in rules {
             routingList.addArrangedSubview(ruleRow(rule, spaces))
         }
+    }
+
+    // MARK: Extensions
+
+    private func extensionsView() -> NSView {
+        let v = NSView()
+        let title = heading("Browser Extensions")
+        let hint = NSTextField(labelWithString: "Install Web Extensions from an unpacked folder or a .zip / .crx. They run in every tab; content scripts and toolbar popups work. Compatibility follows Apple's WebExtensions support — not every Chrome extension will load.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 3
+        hint.preferredMaxLayoutWidth = 620
+
+        extensionsList.orientation = .vertical
+        extensionsList.alignment = .leading
+        extensionsList.spacing = 8
+        extensionsList.translatesAutoresizingMaskIntoConstraints = false
+
+        let add = NSButton(title: "Add Extension…", image: NSImage(systemSymbolName: "plus", accessibilityDescription: nil)!, target: self, action: #selector(addExtension))
+        add.imagePosition = .imageLeading; add.bezelStyle = .rounded; add.controlSize = .regular
+
+        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let doc = NSView(); doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(extensionsList); scroll.documentView = doc
+
+        for s in [title, hint, add, scroll] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            add.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
+            add.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            scroll.topAnchor.constraint(equalTo: add.bottomAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            scroll.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            scroll.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -24),
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            extensionsList.topAnchor.constraint(equalTo: doc.topAnchor, constant: 2),
+            extensionsList.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            extensionsList.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            extensionsList.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -2),
+        ])
+        rebuildExtensionsList()
+        return v
+    }
+
+    private func rebuildExtensionsList() {
+        extensionsList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let installed = ExtensionManager.shared.installed
+        if installed.isEmpty {
+            let empty = NSTextField(labelWithString: "No extensions installed yet.")
+            empty.font = .systemFont(ofSize: 12); empty.textColor = .tertiaryLabelColor
+            extensionsList.addArrangedSubview(empty)
+            return
+        }
+        for ext in installed { extensionsList.addArrangedSubview(extensionRow(ext)) }
+    }
+
+    private func extensionRow(_ ext: InstalledExtension) -> NSView {
+        let r = NSView()
+        r.translatesAutoresizingMaskIntoConstraints = false
+
+        let icon = NSImageView(image: NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)!)
+        icon.contentTintColor = ext.enabled ? .controlAccentColor : .tertiaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let name = NSTextField(labelWithString: ext.name)
+        name.font = .systemFont(ofSize: 13, weight: .medium)
+        name.lineBreakMode = .byTruncatingTail
+        name.translatesAutoresizingMaskIntoConstraints = false
+
+        let toggle = NSSwitch(); toggle.state = ext.enabled ? .on : .off
+        toggle.identifier = NSUserInterfaceItemIdentifier(ext.id)
+        toggle.target = self; toggle.action = #selector(toggleExtension(_:))
+        toggle.translatesAutoresizingMaskIntoConstraints = false
+
+        let remove = NSButton(image: NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))!,
+                              target: self, action: #selector(removeExtension(_:)))
+        remove.bezelStyle = .rounded; remove.controlSize = .regular
+        remove.contentTintColor = .systemRed
+        remove.identifier = NSUserInterfaceItemIdentifier(ext.id)
+        remove.translatesAutoresizingMaskIntoConstraints = false
+
+        r.addSubview(icon); r.addSubview(name); r.addSubview(toggle); r.addSubview(remove)
+        NSLayoutConstraint.activate([
+            r.heightAnchor.constraint(equalToConstant: 28),
+            r.widthAnchor.constraint(equalToConstant: 600),
+            icon.leadingAnchor.constraint(equalTo: r.leadingAnchor),
+            icon.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            name.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            name.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -12),
+            toggle.trailingAnchor.constraint(equalTo: remove.leadingAnchor, constant: -12),
+            toggle.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+            remove.trailingAnchor.constraint(equalTo: r.trailingAnchor),
+            remove.centerYAnchor.constraint(equalTo: r.centerYAnchor),
+        ])
+        return r
+    }
+
+    @objc private func addExtension() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an unpacked extension folder, or a .zip / .crx file."
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { @MainActor in
+            do {
+                try await ExtensionManager.shared.add(from: url)
+                self.rebuildExtensionsList()
+            } catch {
+                let a = NSAlert()
+                a.messageText = "Couldn't add extension"
+                a.informativeText = "The folder or archive doesn't contain a valid Web Extension (manifest.json). \(error.localizedDescription)"
+                a.runModal()
+            }
+        }
+    }
+
+    @objc private func toggleExtension(_ s: NSSwitch) {
+        guard let id = s.identifier?.rawValue else { return }
+        ExtensionManager.shared.setEnabled(s.state == .on, id: id)
+        rebuildExtensionsList()
+    }
+
+    @objc private func removeExtension(_ s: NSButton) {
+        guard let id = s.identifier?.rawValue,
+              let ext = ExtensionManager.shared.installed.first(where: { $0.id == id }) else { return }
+        let a = NSAlert()
+        a.messageText = "Remove “\(ext.name)”?"
+        a.informativeText = "This uninstalls the extension and deletes its files."
+        a.addButton(withTitle: "Remove"); a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        ExtensionManager.shared.remove(id)
+        rebuildExtensionsList()
     }
 
     private func ruleRow(_ rule: RoutingRule, _ spaces: [(id: UUID, name: String)]) -> NSView {

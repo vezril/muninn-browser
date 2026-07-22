@@ -74,6 +74,12 @@ final class AppShell: NSObject {
     private let reloadButton = NSButton()
     private let settingsButton = NSButton()
     private let shieldButton = NSButton()
+    /// Browser extensions: the controller delegate (maps Muninn tabs/windows) + the toolbar of
+    /// per-extension action buttons under the address field.
+    let extensionBridge = ExtensionBridge()
+    private let extensionBar = NSStackView()
+    private var extActionButtons: [NSButton: WKWebExtensionContext] = [:]
+    private var lastNotifiedActiveTabId = -1
     private let shields = ShieldsManager.shared
     private let sidebar = HoverView()
     private let tabStack = NSStackView()
@@ -204,6 +210,12 @@ final class AppShell: NSObject {
         }
         shields.rebuild()
         updateShieldIcon()
+        // Browser extensions: point the controller at this window, then load enabled extensions.
+        extensionBridge.host = self
+        ExtensionManager.shared.controller.delegate = extensionBridge
+        ExtensionManager.shared.onChange = { [weak self] in self?.rebuildExtensionToolbar() }
+        ExtensionManager.shared.loadEnabled()
+        rebuildExtensionToolbar()
         let env = ProcessInfo.processInfo.environment
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
@@ -493,6 +505,7 @@ final class AppShell: NSObject {
         outgoing.lastActiveAt = Date()
         let tab = makeTab(); tab.workspaceId = activeWorkspaceId
         tabs.append(tab)
+        extensionBridge.didOpen(tab)
         activeIndex = tabs.count - 1
         popOutIfPlaying(outgoing) // Cmd+T while a video plays → Mini Player
         showActiveWebView()
@@ -1369,6 +1382,7 @@ final class AppShell: NSObject {
         let active = activeTab
         let closingActive = tabs[index] === active
         if let saved = tabs[index].saved() { closedTabs.append(saved) } // for Cmd+Shift+T
+        extensionBridge.didClose(tabs[index])
         tabs[index].stop()
         tabs.remove(at: index)
         if tabs.isEmpty { window.performClose(nil); return } // truly the last tab → close window
@@ -1418,7 +1432,7 @@ final class AppShell: NSObject {
     @objc private func reopenLastClosed() {
         guard let saved = closedTabs.popLast(), let url = URL(string: saved.url) else { return }
         let tab = makeTab(); tab.workspaceId = activeWorkspaceId
-        tabs.append(tab); activeIndex = tabs.count - 1
+        tabs.append(tab); extensionBridge.didOpen(tab); activeIndex = tabs.count - 1
         showActiveWebView(); tab.load(url); rebuildTabBar()
     }
 
@@ -1582,7 +1596,7 @@ final class AppShell: NSObject {
     /// Open a URL in a new regular tab in the active workspace.
     private func openInNewTab(_ url: URL) {
         let tab = makeTab(); tab.workspaceId = activeWorkspaceId
-        tabs.append(tab); activeIndex = tabs.count - 1
+        tabs.append(tab); extensionBridge.didOpen(tab); activeIndex = tabs.count - 1
         showActiveWebView(); tab.load(url); rebuildTabBar()
     }
 
@@ -1932,7 +1946,57 @@ final class AppShell: NSObject {
     }
 
     /// Render whatever the active tab entails — its split group, or itself alone.
-    private func showActiveWebView() { showVisibleTabs() }
+    private func showActiveWebView() { showVisibleTabs(); refreshExtensionActive() }
+
+    // MARK: - Browser extensions toolbar
+
+    /// Notify extensions the active tab changed, and refresh the action toolbar's per-tab state.
+    private func refreshExtensionActive() {
+        guard !tabs.isEmpty else { return }
+        let cur = activeTab
+        if cur.id != lastNotifiedActiveTabId {
+            let prev = tabs.first { $0.id == lastNotifiedActiveTabId }
+            extensionBridge.didActivate(cur, previous: prev)
+            lastNotifiedActiveTabId = cur.id
+        }
+        rebuildExtensionToolbar()
+    }
+
+    /// One button per loaded extension's action (for the active tab); click → popup or click event.
+    private func rebuildExtensionToolbar() {
+        extensionBar.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        extActionButtons.removeAll()
+        guard !tabs.isEmpty else { return }
+        let proxy = extensionBridge.proxy(for: activeTab)
+        for context in ExtensionManager.shared.loadedContexts {
+            guard let action = context.action(for: proxy) else { continue }
+            let b = NSButton()
+            b.isBordered = false
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.imagePosition = .imageOnly
+            b.image = action.icon(for: CGSize(width: 16, height: 16))
+                ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
+            let name = context.webExtension.displayName ?? "Extension"
+            b.toolTip = action.label.isEmpty ? name : action.label
+            b.target = self; b.action = #selector(extensionActionClicked(_:))
+            b.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            extActionButtons[b] = context
+            extensionBar.addArrangedSubview(b)
+        }
+    }
+
+    @objc private func extensionActionClicked(_ sender: NSButton) {
+        guard let context = extActionButtons[sender], !tabs.isEmpty else { return }
+        let proxy = extensionBridge.proxy(for: activeTab)
+        let action = context.action(for: proxy)
+        if let action, action.presentsPopup, let popover = action.popupPopover {
+            popover.behavior = .transient
+            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+        } else {
+            context.performAction(for: proxy)   // popup-less action → fire onClicked
+        }
+    }
 
     private func pin(_ v: NSView, to parent: NSView) {
         NSLayoutConstraint.activate([
@@ -2631,6 +2695,12 @@ final class AppShell: NSObject {
         shieldButton.toolTip = "Shields"
         shieldButton.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(shieldButton)
+        // Browser-extension action buttons — a thin row under the address field.
+        extensionBar.orientation = .horizontal
+        extensionBar.spacing = 2
+        extensionBar.alignment = .centerY
+        extensionBar.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(extensionBar)
         sidebar.addSubview(workspaceBar)
         sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
@@ -2646,7 +2716,10 @@ final class AppShell: NSObject {
             settingsButton.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: Self.sidebarWidth - 8),
             settingsButton.centerYAnchor.constraint(equalTo: addressField.centerYAnchor),
             settingsButton.widthAnchor.constraint(equalToConstant: 22),
-            tabStack.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 12),
+            extensionBar.topAnchor.constraint(equalTo: addressField.bottomAnchor, constant: 8),
+            extensionBar.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
+            extensionBar.trailingAnchor.constraint(lessThanOrEqualTo: settingsButton.trailingAnchor),
+            tabStack.topAnchor.constraint(equalTo: extensionBar.bottomAnchor, constant: 8),
             tabStack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
             tabStack.widthAnchor.constraint(equalToConstant: Self.sidebarWidth - 16),
             libraryButton.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 8),
@@ -3056,5 +3129,30 @@ extension AppShell: @preconcurrency NSSharingServicePickerDelegate {
     func sharingServicePicker(_ picker: NSSharingServicePicker, didChoose service: NSSharingService?) {
         toastPinned = false
         dismissToast(currentToast)
+    }
+}
+
+// MARK: - Browser extensions host
+
+extension AppShell: ExtensionHost {
+    var extNSWindow: NSWindow { window }
+    func extLiveTabs() -> [BrowserTab] { tabs.filter { $0.workspaceId == activeWorkspaceId } }
+    func extActiveTab() -> BrowserTab? { tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil }
+
+    func extOpenTab(url: URL?) -> BrowserTab {
+        let tab = makeTab(); tab.workspaceId = activeWorkspaceId
+        tabs.append(tab); extensionBridge.didOpen(tab); activeIndex = tabs.count - 1
+        showActiveWebView()
+        if let url { tab.load(url) } else { loadLanding(tab) }
+        rebuildTabBar()
+        return tab
+    }
+    func extActivate(_ tab: BrowserTab) { if let i = tabs.firstIndex(where: { $0 === tab }) { selectTab(i) } }
+    func extCloseTab(_ tab: BrowserTab) { if let i = tabs.firstIndex(where: { $0 === tab }) { closeTab(i) } }
+
+    /// Show an extension's popup anchored to its toolbar button (falls back to the gear).
+    func extPresentActionPopover(_ popover: NSPopover, for context: WKWebExtensionContext) {
+        let anchor = extActionButtons.first(where: { $0.value === context })?.key ?? settingsButton
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 }

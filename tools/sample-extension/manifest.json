@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Muninn Hello",
+  "version": "1.0",
+  "description": "A tiny test extension: banner content script + toolbar popup.",
+  "action": { "default_title": "Muninn Hello", "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}
