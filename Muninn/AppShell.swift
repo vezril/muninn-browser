@@ -29,6 +29,7 @@ final class AppShell: NSObject {
     private let notificationStore = NotificationStore()
     private let notificationsView = NotificationsView()
     private let remindersTool = RemindersTool()
+    private let pomodoroTool = PomodoroTool()
     private var quickLooks: [QuickLookWindow] = []
     private var nextQuickLookId = 0
     private var taskManager: TaskManagerWindow?
@@ -1958,6 +1959,7 @@ final class AppShell: NSObject {
             .init(id: "taskManager", title: "Task Manager", symbol: "gauge.with.dots.needle.bottom.50percent", shortcut: nil),
             .init(id: "translatePage", title: "Translate Page", symbol: "translate", shortcut: nil),
             .init(id: "reminders", title: "Show Reminders", symbol: "checklist", shortcut: nil),
+            .init(id: "pomodoro", title: "Pomodoro Timer", symbol: "timer", shortcut: nil),
             .init(id: "newReminder", title: "New Reminder…", symbol: "plus.circle", shortcut: nil),
             .init(id: "reminderFromPage", title: "New Reminder from Page", symbol: "bookmark", shortcut: nil),
             .init(id: "listFromPage", title: "Create Reminders List from Page", symbol: "list.bullet.rectangle", shortcut: nil),
@@ -2064,6 +2066,7 @@ final class AppShell: NSObject {
         case "taskManager":   openTaskManager()
         case "translatePage": translateButtonClicked()
         case "reminders":         revealRemindersTool()
+        case "pomodoro":          revealPomodoro()
         case "newReminder":       newReminder()
         case "reminderFromPage":  reminderFromPage()
         case "listFromPage":      listFromPage()
@@ -2522,6 +2525,12 @@ final class AppShell: NSObject {
     func revealRemindersTool() {
         if !toolsOpen { setToolsOpen(true, animated: true) }
         toolsSidebar.selectTool("reminders")
+    }
+
+    /// Open the Tools sidebar and show the Pomodoro tool.
+    func revealPomodoro() {
+        if !toolsOpen { setToolsOpen(true, animated: true) }
+        toolsSidebar.selectTool("pomodoro")
     }
 
     /// Ensure Reminders access, then run `body`. Surfaces a toast if declined.
@@ -3399,9 +3408,13 @@ final class AppShell: NSObject {
         toolsSidebar.setTools([
             .init(id: "calendar", title: "Calendar", symbol: "calendar", view: liveWidget),
             .init(id: "reminders", title: "Reminders", symbol: "checklist", view: remindersTool),
+            .init(id: "pomodoro", title: "Pomodoro", symbol: "timer", view: pomodoroTool),
             .init(id: "ask", title: "Ask", symbol: "sparkles", view: askChat),
             .init(id: "notifications", title: "Notifications", symbol: "bell", view: notificationsView),
         ])
+        pomodoroTool.onPhaseComplete = { [weak self] ended, next in
+            self?.showToast("\(ended.title) done — \(next.title) up")
+        }
     }
 
     // MARK: - Live Calendar
