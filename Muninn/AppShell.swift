@@ -112,6 +112,11 @@ final class AppShell: NSObject {
     private var toolsOpen = false
     private var toolsPeeking = false          // temporarily revealed by hovering the right edge
     private var toolsTrailingConstraint: NSLayoutConstraint!
+    /// Status bar (weather) in the strip above the web card.
+    private let statusBar = StatusBarView()
+    private let weather = WeatherService()
+    private var weatherTimer: Timer?
+    private var weatherTask: Task<Void, Never>?
     private var webTrailingCollapsed: NSLayoutConstraint!
     private var webTrailingWithTools: NSLayoutConstraint!
     private static let defaultToolsWidth: CGFloat = 280
@@ -227,6 +232,7 @@ final class AppShell: NSObject {
         installKeyMonitor()
         installMouseMonitor()
         PageTranslator.shared.attach(to: window)   // offscreen SwiftUI host for on-device translation
+        applyStatusBar()                           // start the weather status if enabled
         // Auto-Archive sweep every few minutes (also runs on each tab switch).
         archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -3351,6 +3357,10 @@ final class AppShell: NSObject {
         content.addSubview(webContainer)
         content.addSubview(toolsSidebar)   // right edge, behind the web card's shadow
         content.addSubview(sidebar)        // above the web card
+        // Status bar — in the title-bar strip above the web card, centred over it.
+        statusBar.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.isHidden = !StatusBarSettings.enabled
+        content.addSubview(statusBar)
         content.addSubview(sidebarSplitter) // draggable resize handles on the pane edges
         content.addSubview(toolsSplitter)
         // Video-download progress HUDs — stacked at the web card's bottom-right (clear of the
@@ -3389,6 +3399,11 @@ final class AppShell: NSObject {
             toolsButton.trailingAnchor.constraint(equalTo: toolsSidebar.trailingAnchor, constant: -12),
             videoHUDStack.trailingAnchor.constraint(equalTo: webContainer.trailingAnchor, constant: -16),
             videoHUDStack.bottomAnchor.constraint(equalTo: webContainer.bottomAnchor, constant: -16),
+            statusBar.topAnchor.constraint(equalTo: content.topAnchor, constant: 4),
+            statusBar.heightAnchor.constraint(equalToConstant: 26),
+            statusBar.centerXAnchor.constraint(equalTo: webContainer.centerXAnchor),
+            statusBar.leadingAnchor.constraint(greaterThanOrEqualTo: webContainer.leadingAnchor, constant: 8),
+            statusBar.trailingAnchor.constraint(lessThanOrEqualTo: webContainer.trailingAnchor, constant: -8),
         ])
 
         // Resize handles: a thin draggable strip centred on each pane's inner edge.
@@ -3683,6 +3698,34 @@ final class AppShell: NSObject {
             toolsTrailingConstraint.animator().constant = constant
             window.contentView?.layoutSubtreeIfNeeded()
         }, completionHandler: then)
+    }
+
+    // MARK: - Status bar (weather)
+
+    /// Apply the current status-bar settings: show/hide, and (re)start the weather refresh. Called at
+    /// launch and whenever the settings change.
+    func applyStatusBar() {
+        statusBar.isHidden = !StatusBarSettings.enabled
+        weatherTimer?.invalidate(); weatherTimer = nil
+        weatherTask?.cancel()
+        guard StatusBarSettings.enabled else { return }
+        statusBar.setLoading()
+        refreshWeather()
+        // Weather changes slowly — refresh every 20 minutes.
+        weatherTimer = Timer.scheduledTimer(withTimeInterval: 1200, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshWeather() }
+        }
+    }
+
+    private func refreshWeather() {
+        let city = StatusBarSettings.city
+        let fahrenheit = StatusBarSettings.fahrenheit
+        weatherTask?.cancel()
+        weatherTask = Task { @MainActor in
+            let snap = await self.weather.fetch(city: city)
+            if Task.isCancelled { return }
+            self.statusBar.update(snap, fahrenheit: fahrenheit)
+        }
     }
 
     private func configureButton(_ b: NSButton, symbol: String, action: Selector) {

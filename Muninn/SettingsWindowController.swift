@@ -11,6 +11,7 @@ final class SettingsWindowController: NSWindowController {
     private let sections: [(title: String, icon: String)] = [
         ("General", "gearshape"), ("Profiles", "person.2"), ("Routing", "arrow.triangle.branch"),
         ("Calendars", "calendar"), ("Models", "cpu"), ("Obsidian", "book.closed"),
+        ("Status Bar", "cloud.sun"),
         ("Shields", "shield.lefthalf.filled"), ("Extensions", "puzzlepiece.extension"),
         ("Shortcuts", "keyboard"), ("Advanced", "slider.horizontal.3"),
     ]
@@ -26,6 +27,7 @@ final class SettingsWindowController: NSWindowController {
     private let routingList = NSStackView()
     private let calendarList = NSStackView()
     private let baseURLField = NSTextField()
+    private let cityField = NSTextField()
     private let modelPopup = NSPopUpButton()
     private let modelStatus = NSTextField(labelWithString: "")
 
@@ -109,7 +111,7 @@ final class SettingsWindowController: NSWindowController {
             b.contentTintColor = i == index ? .controlAccentColor : .labelColor
         }
         content.subviews.forEach { $0.removeFromSuperview() }
-        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, shieldsView, extensionsView, shortcutsView, advancedView][index]()
+        let view: NSView = [generalView, profilesView, routingView, calendarsView, modelsView, obsidianView, statusBarView, shieldsView, extensionsView, shortcutsView, advancedView][index]()
         view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(view)
         NSLayoutConstraint.activate([
@@ -1019,6 +1021,45 @@ final class SettingsWindowController: NSWindowController {
         ])
         return v
     }
+
+    // MARK: Status Bar
+
+    private func statusBarView() -> NSView {
+        let v = NSView()
+        let title = heading("Status Bar")
+        let hint = NSTextField(labelWithString: "A compact status shown above the web content. Weather (temperature, humidity, US AQI) comes from Open-Meteo — no account, no API key, fetched on-device.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
+        hint.lineBreakMode = .byWordWrapping; hint.maximumNumberOfLines = 3; hint.preferredMaxLayoutWidth = 620
+
+        cityField.stringValue = StatusBarSettings.city
+        cityField.placeholderString = "Montreal"
+        cityField.font = .systemFont(ofSize: 13)
+        cityField.target = self; cityField.action = #selector(cityChanged)
+        cityField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+
+        let stack = formStack([
+            row("Show status bar", makeSwitch(StatusBarSettings.enabled, #selector(toggleStatusBar(_:)))),
+            row("City", cityField),
+            row("Use Fahrenheit", makeSwitch(StatusBarSettings.fahrenheit, #selector(toggleFahrenheit(_:)))),
+        ])
+        for s in [title, hint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        v.addSubview(stack)
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+            hint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+        ])
+        return v
+    }
+
+    @objc private func toggleStatusBar(_ s: NSSwitch) { StatusBarSettings.enabled = (s.state == .on); host?.applyStatusBar() }
+    @objc private func toggleFahrenheit(_ s: NSSwitch) { StatusBarSettings.fahrenheit = (s.state == .on); host?.applyStatusBar() }
+    @objc private func cityChanged() { StatusBarSettings.city = cityField.stringValue; host?.applyStatusBar() }
 
     /// A path label (truncating middle) + a "Choose…" button.
     private func pathControl(_ label: NSTextField, _ action: Selector) -> NSView {
