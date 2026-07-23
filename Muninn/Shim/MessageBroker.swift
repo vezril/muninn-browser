@@ -28,6 +28,9 @@ final class MessageBroker: NSObject {
     /// Audit sink — every unmodelled access + host lifecycle event lands here.
     private(set) var auditLog: [[String: Any]] = []
     var onAudit: (([String: Any]) -> Void)?
+    /// Diagnostic-only, type-safe wire tap (nil in normal use; set by the popup-boot diagnostic).
+    /// Emits a short label per routed message — direction/key/context only, never payloads (ground rule 1).
+    var onWire: ((String) -> Void)?
 
     /// Named push contexts (ADR-007 / E6 message bus). `host` = the background
     /// Worker (reached via its page's MAIN-world `window.__shimPush` → worker);
@@ -278,12 +281,29 @@ final class MessageBroker: NSObject {
     var onFetchProbe: ((_ method: String, _ host: String, _ status: Int, _ errored: Bool) -> Void)?
 
     func routeSendMessageToHost(_ message: Any?, senderURL: String?) async -> Any? {
+        if onWire != nil {
+            if let d = message as? [String: Any] {
+                onWire?("→host sendMessage dict type=\(d["type"].map { "\($0)" } ?? "-") keys=[\(Array(d.keys).sorted().joined(separator: ","))]")
+            } else if let s = message as? String {
+                let hint = s == PassBundle.canonicalID ? "==extensionID"
+                    : (s.first == "{" || s.first == "[" ? "json-like len=\(s.count)" : "plain len=\(s.count)")
+                onWire?("→host sendMessage String(\(hint))")
+            } else {
+                onWire?("→host sendMessage swiftType=\(Swift.type(of: message as Any))")
+            }
+        }
         // Internal (isolated content script) sender: carries the canonical id.
         let sender: [String: Any] = [
             "id": PassBundle.canonicalID, "url": senderURL ?? "",
             "frameId": 0, "tab": ["id": 1, "url": senderURL ?? ""],
         ]
-        return await route(key: "runtime.onMessage", message: message, sender: sender, senderURL: senderURL)
+        let result = await route(key: "runtime.onMessage", message: message, sender: sender, senderURL: senderURL)
+        if onWire != nil {
+            if result == nil || result is NSNull { onWire?("←host response = NULL") }
+            else if let d = result as? [String: Any] { onWire?("←host response keys=[\(Array(d.keys).sorted().joined(separator: ","))]") }
+            else { onWire?("←host response = \(Swift.type(of: result))") }
+        }
+        return result
     }
 
     /// Page MAIN-world `chrome.runtime.sendMessage(extId, msg)` on an
@@ -328,6 +348,53 @@ final class MessageBroker: NSObject {
             }
         }
         onCrossContextRelay?("response-out", senderHost) // background.js handled it
+        return box.value
+    }
+
+    /// `tabs.sendMessage(tabId, message)` from the background worker → deliver `runtime.onMessage`
+    /// into the target tab's CONTENT world and await the content script's reply. This is how
+    /// Proton's Safari build pulls the auth fork: `background.js` delegates AUTH_PULL_FORK to
+    /// `fork.js` (running same-origin on account.proton.me, no CORS), which does the network pull
+    /// and responds. Previously a stub returned null → gy threw "Unknown error occurred".
+    func routeTabsSendMessage(_ env: [String: Any]) async -> Any? {
+        let args = env["args"] as? [Any] ?? []
+        // chrome.tabs.sendMessage(tabId, message[, options]) — the message is the 2nd arg.
+        let message: Any? = args.count >= 2 ? args[1] : args.first
+        guard let target = forkContentContext() else { return NSNull() }
+        return await routeToContent(context: target, key: "runtime.onMessage", message: message)
+    }
+
+    /// The content context that owns the auth fork (account.proton.me tab). Falls back to the
+    /// default single content tab ("page") when the URL isn't resolvable yet.
+    private func forkContentContext() -> String? {
+        for (name, ctx) in contexts where ctx.world != nil {
+            if let host = ctx.webView?.url?.host,
+               host == "account.proton.me" || host.hasSuffix(".account.proton.me") {
+                return name
+            }
+        }
+        return contexts["page"] != nil ? "page" : nil
+    }
+
+    /// Push `key` (e.g. `runtime.onMessage`) into a CONTENT context's isolated world and await
+    /// its `sendResponse`. Mirrors `route` but targets a page content world rather than the host
+    /// worker. The 30s window matches Proton's own fork-pull timeout (gy).
+    private func routeToContent(context: String, key: String, message: Any?) async -> Any? {
+        guard contexts[context] != nil else { return NSNull() }
+        respSeq += 1
+        let id = "resp\(respSeq)"
+        let sender: [String: Any] = ["id": PassBundle.canonicalID, "url": "", "tab": ["id": 1]]
+        let env: [String: Any] = [
+            "__shim": "push", "key": key,
+            "args": [message ?? NSNull(), sender], "respId": id,
+        ]
+        let box = await withCheckedContinuation { (cont: CheckedContinuation<AnyBox, Never>) in
+            pending[id] = cont
+            deliver(env, to: context)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                if let c = self?.pending.removeValue(forKey: id) { c.resume(returning: AnyBox(value: NSNull())) }
+            }
+        }
         return box.value
     }
 
@@ -412,6 +479,11 @@ final class MessageBroker: NSObject {
     }
 
     private func deliver(_ env: [String: Any], to name: String) {
+        if onWire != nil {
+            let shim = (env["__shim"] as? String) ?? "?"
+            let key = (env["key"] as? String) ?? (env["name"] as? String) ?? (env["portId"] as? String).map { "port:\($0.prefix(6))" } ?? ""
+            onWire?("deliver→\(name) \(shim):\(key)")
+        }
         guard let ctx = contexts[name], let webView = ctx.webView,
               let data = try? JSONSerialization.data(withJSONObject: env),
               let json = String(data: data, encoding: .utf8) else { return }

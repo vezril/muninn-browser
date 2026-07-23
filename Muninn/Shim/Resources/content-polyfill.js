@@ -157,7 +157,19 @@
       function sendResponse(r) { if (responded) return; responded = true;
         if (env.respId && broker) broker.postMessage({ ns: "__respond", method: "resolve", args: [env.respId, r === undefined ? null : r] }); }
       var wantsAsync = false;
-      for (var i = 0; i < l.length; i++) { try { if (l[i](a[0], a[1], sendResponse) === true) wantsAsync = true; } catch (_) {} }
+      for (var i = 0; i < l.length; i++) {
+        try {
+          var ret = l[i](a[0], a[1], sendResponse);
+          // Async responders: either `return true` + sendResponse (Chrome), or return a
+          // Promise (Firefox/webextension-polyfill style). Proton's fork.js returns a Promise
+          // AND calls sendResponse — whichever settles first wins (responded guard).
+          if (ret === true) { wantsAsync = true; }
+          else if (ret && typeof ret.then === "function") {
+            wantsAsync = true;
+            ret.then(function (v) { sendResponse(v); }, function () { sendResponse(null); });
+          }
+        } catch (_) {}
+      }
       if (!wantsAsync && !responded && env.respId && broker) broker.postMessage({ ns: "__respond", method: "resolve", args: [env.respId, null] });
     } else {
       for (var j = 0; j < l.length; j++) { try { l[j].apply(null, a); } catch (_) {} }

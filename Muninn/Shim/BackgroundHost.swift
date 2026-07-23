@@ -167,6 +167,12 @@ private final class HostBridge: NSObject, WKScriptMessageHandlerWithReply, WKScr
             host.broker.onFetchProbe?("ENTRY", h, 0, false)
             return (NSNull(), nil)
         }
+        // tabs.sendMessage(tabId, message) — Proton's Safari fork-pull delegates AUTH_PULL_FORK
+        // to the account tab's content script (fork.js, same-origin, no CORS). Async: awaits the
+        // content script's reply and returns it to the worker (a stub null → "Unknown error").
+        if (env["ns"] as? String) == "tabs", (env["method"] as? String) == "sendMessage" {
+            return (await host.broker.routeTabsSendMessage(env), nil)
+        }
         do { return (try host.broker.handle(env), nil) }
         catch { return (nil, String(describing: error)) }
     }

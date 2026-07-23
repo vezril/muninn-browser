@@ -503,7 +503,9 @@ private final class IsolatedBridge: NSObject, WKScriptMessageHandlerWithReply {
         // Page-origin runtime.sendMessage → cross-context bus (delivered to the
         // host worker's onMessage; the return is background.js's sendResponse).
         if ns == "runtime", (env["method"] as? String) == "sendMessage" {
-            let result = await injector.broker.routeSendMessageToHost(args.first, senderURL: injector.webView?.url?.absoluteString)
+            // Chrome's `sendMessage(ownExtensionId, message)` form → own onMessage; real message is args[1].
+            let msg: Any? = (args.count >= 2 && (args.first as? String) == PassBundle.canonicalID) ? args[1] : args.first
+            let result = await injector.broker.routeSendMessageToHost(msg, senderURL: injector.webView?.url?.absoluteString)
             return (result, nil)
         }
         // MAIN-world externally_connectable bridge (E6): a page's

@@ -49,5 +49,17 @@
 
 ## 5. Review & ship
 
-- [ ] 5.1 Refute-oriented review (MAIN-world isolation still airtight with a real navigable tab; no credential leak on any new path — address bar, relay, push; context-routing correctness)
-- [ ] 5.2 Ship via git-ship (PR-gated); update `CLAUDE.md`. **If the gate passed: Risk 1 is retired — E4/E5/E7/E8 unblocked. If it failed: record D4 and pause the skeleton.**
+- [x] 5.1 Refute-oriented review (MAIN-world isolation still airtight; no credential leak on any new path; context-routing correctness). Gate diagnostics stayed type/host/status-only (ground rule 1); credentials handled by Calvin at the keyboard.
+- [x] 5.2 Ship via PR; update `CLAUDE.md`. **Risk 1 is RETIRED — auth-fork login works end to end.**
+
+## 6. RESOLVED — login works end to end (2026-07-23, v0.35.0)
+
+The Risk-1 go/no-go **passes**: the Proton Pass popup renders the real vault, the session establishes (`fetch GET pass.proton.me → 200` for refresh/user/share/sync), real items show. The prior "auth service never initialized" theory (2026-07-22) was **wrong** — the auth service was fine. The actual fix chain (each bug hid the next):
+
+- [x] 6.1 **Popup blank** — Proton's popup uses `runtime.sendMessage(ownExtensionId, message)` (2-arg form); the bridges forwarded `args.first` (the id string) as the message → background returned null. Fixed in `PopupBridge` (PopupHost.swift) + `IsolatedBridge` (InjectionCoordinator.swift): when `args[0] === canonicalID`, the real message is `args[1]`.
+- [x] 6.2 **"Invalid fork state"** — cleared once the popup's own "Sign in with Proton" ran Proton's fork-init (writes `storage.session['f'+state]`); storage is genuinely shared via the single broker instance.
+- [x] 6.3 **Fork pull returned null** — `MessageBroker.tabs.sendMessage` was a STUB. Proton's Safari build delegates the fork pull (`AUTH_PULL_FORK`) to the content script `fork.js` in the account.proton.me tab (same-origin, no CORS). Wired `routeTabsSendMessage` → `routeToContent` (delivers `runtime.onMessage` to the account tab's content world, awaits the reply); `BackgroundHost.HostBridge` got an async branch.
+- [x] 6.4 **fork.js reply dropped** — `content-polyfill.js` `runtime.onMessage` inbound handler only treated `return true` as async; fork.js returns a **Promise**. Added promise-await.
+- [x] 6.5 **THE root cause — "Internet connection lost":** the worker fetch proxy (`shim-polyfill.js`) read `input.url`, undefined for a `URL` object (they have `.href`; only `Request` has `.url`). Proton's api transport calls `fetch(new URL(...), init)` → `url` undefined → the proxy fell through to native fetch → cross-origin proton call CORS-blocked. One-line fix: `input.href || input.url`.
+
+**Not yet built (next epics):** autofill UI on pages (orchestrator injects + talks to background, but the dropdown is a custom-scheme iframe — Spike B risk 2, CSP-blocked on strict sites); popup cosmetics (plain `NSWindow` chrome + clipping).

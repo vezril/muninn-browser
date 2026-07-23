@@ -155,3 +155,31 @@ Mobile **mandates** the $99 Apple Developer Program (iOS distribution; free prov
 7 days). Paying it once unlocks a cluster: iOS distribution **+** APNs for background sync **+** Developer
 ID for the self-update backlog item **+** App Store. Three separate explorations (self-update, mobile,
 sync) all terminate at this one gate — worth a deliberate decision when the time comes.
+
+---
+
+## Casting to a TV (Chromecast; AirPlay already works)
+
+**Status:** explored 2026-07-23, not started.
+**Itch:** cast a video / the browser to a TV.
+
+### Current state (checked)
+- **AirPlay: works today (Apple TVs / AirPlay-2 TVs).** WKWebView's default `allowsAirPlayForMediaPlayback
+  = true` is in effect (never disabled), so HTML5 `<video>` gets the native AirPlay routing button, and
+  macOS Screen Mirroring can throw the whole window. No code needed.
+- **Chromecast: NOT supported, and not trivial.** Google Cast is a Chromium feature — the Cast SDK is baked
+  into Chrome, and web "Cast" buttons (YouTube/Netflix/…) drive *that* infrastructure. WebKit/WKWebView has
+  none of it, so those buttons can't find a Chromecast.
+
+### What Chromecast would take (if pursued)
+- Web page "Cast" buttons → **impossible** to satisfy without Chrome's `cast_sender` infrastructure; can't
+  bolt onto WKWebView.
+- A **native "Cast to TV" button** IS feasible but substantial: embed the **Google Cast SDK**
+  (`GCKCastContext`), mDNS device discovery + a device picker, **extract the current tab's media URL** and
+  send it (the same media-extraction problem as the yt-dlp video downloader), a one-time **Google Cast
+  Developer registration** (~$5 + an app ID), plus a heavy dependency and App-Store/entitlement wrinkles.
+
+### Verdict
+AirPlay already covers the Apple-TV "watch this on the TV" case for free. A native Chromecast button is a
+real, standalone feature — best scoped **alongside the video-downloader work**, since both need per-tab
+media-URL extraction. Low priority unless Chromecast specifically is a must-have.

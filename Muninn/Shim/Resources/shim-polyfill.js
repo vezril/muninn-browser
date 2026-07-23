@@ -285,7 +285,12 @@
       return bytes;
     }
     self.fetch = function (input, init) {
-      var url = (typeof input === "string") ? input : (input && input.url);
+      // input may be a string, a URL object (has .href, NOT .url), or a Request (.url).
+      // Missing the URL-object case made `url` undefined → the proxy fell through to native
+      // fetch → CORS-blocked cross-origin proton calls → "Failed to fetch". (Proton's api
+      // transport calls fetch(new URL(...), init).)
+      var url = (typeof input === "string") ? input
+              : (input && (input.href || input.url));
       // Safe entry probe (host only) — lets the E6 gate see whether the worker calls
       // fetch during the fork, and to which host, before the allowlist decision.
       try {

@@ -3878,6 +3878,7 @@ final class AppShell: NSObject {
             gate("E6-GATE ext-msg type=\(type) from \(senderHost) " + (responded ? "→ RESPONDED" : "→ sent")) }
         broker.onFetchProbe = { method, host, status, errored in
             gate("E6-GATE fetch \(method) \(host) → " + (errored ? "ERR" : "\(status)")) }
+        broker.onWire = { gate("E6-GATE wire \($0)") }   // popup↔background message flow (type-only)
         broker.onAudit = { entry in
             if (entry["kind"] as? String) == "open-url" { gate("E6-GATE open-url \(entry["member"] ?? "?") -> \(entry["url"] ?? "?")") }
         }
@@ -3887,9 +3888,9 @@ final class AppShell: NSObject {
             else if k == "host:backgroundLoaded" { gate("E6-GATE background-loaded") }
             else if k == "console", let text = e["text"] as? String {
                 let markers = ["Invalid fork state", "missing permissions", "consumeFork",
-                               "fork state", "InactiveSession", "pullFork"]
-                if let hit = markers.first(where: { text.localizedCaseInsensitiveContains($0) }) {
-                    gate("E6-GATE bg-marker: \(hit)")
+                               "fork state", "InactiveSession", "pullFork", "[AuthService]"]
+                if markers.contains(where: { text.localizedCaseInsensitiveContains($0) }) {
+                    gate("E6-GATE bg-console: \(text.prefix(200))")
                 }
             }
         }
