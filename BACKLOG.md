@@ -72,3 +72,86 @@ Weaker than Sparkle: trust rests on HTTPS + GitHub + a Team-ID check, not a cryp
 appcast. A compromised GitHub account could push a build, blunted (not eliminated) by the Team-ID check
 since an attacker can't re-sign as XTH7663SR9 without the cert. Acceptable for personal use; revisit if
 Muninn ever gains other users.
+
+---
+
+## Sync + Mobile (self-hosted "dumb relay" sync; iOS companion app)
+
+**Status:** explored 2026-07-23, design settled on a direction, not started.
+**Goal:** sync Muninn's setup across Calvin's devices — two MacBooks now, a **definitely-planned iOS app**
+later (minimal features, not a full port) — in a way that's private and that Calvin owns.
+
+### What actually syncs (triage — the payload is small)
+Sync the **setup, not the session**. Muninn's state lives as JSON in `~/Library/Application Support/Muninn/`.
+- **✅ sync:** `sidebar.json` (favourites, pins, folders, workspaces, profiles, routing rules, anchored
+  tabs — the crown jewel) + a handful of **UserDefaults** prefs (search engine, shields, Obsidian/Pomodoro,
+  shortcuts, calendars).
+- **🟡 maybe:** `history-*.json` (autocomplete continuity; append-mostly, conflict-prone), `chat.json`.
+- **❌ don't:** `downloads.json` (records point at machine-local file paths), `notifications.json`
+  (ephemeral), `Extensions/`, `storage.key` / `storage.local.enc` (the Proton shim's secret+cache; Proton
+  syncs itself), Reminders (already iCloud-synced via EventKit).
+
+Net payload ≈ **one JSON file + some prefs** — exactly what a minimal iOS companion needs too.
+
+### Chosen direction: a self-hosted, zero-knowledge record-log relay
+Calvin is fine running a small server (NAS or cloud). That's the strongest fit — it's the always-on relay
+pure P2P lacks, but one Calvin owns. **Keep the server dumb:** it understands nothing about Muninn.
+```
+  CLIENT (shared MuninnSync package, macOS+iOS): the smarts
+    • record model (favourite/workspace/folder/setting) with stable id + updatedAt
+    • merge rule (last-writer-wins per record/field; CRDT only if needed)
+    • encrypts each record payload with a key from Calvin's passphrase (E2E)
+                       │  opaque ciphertext + versions
+                       ▼
+  SERVER (NAS or cloud, one Docker container): dumb + zero-knowledge
+    • table (userId, recordId, version, updatedAt, ciphertext) — can't read it
+    • one endpoint:  POST /sync { sinceVersion, changed[] } → { changed[], newVersion }
+    • storage: SQLite (one file); auth: per-device bearer token
+```
+**Why dumb wins:** tiny (a few hundred lines), never redeployed when the browser's model changes, and
+E2E-encrypted so **cloud vs NAS are equivalent on privacy** (even a $5 VPS can't read the data). Polling
+(launch + interval + on-edit push) is fine — no websockets needed day one. Stack: **Scala + Pekko HTTP**
+is the natural fit (the roadmap already reserved Scala for the "sync/service layer", and it's in Calvin's
+wheelhouse), but the design is stack-agnostic.
+
+### Why not the alternatives (recorded so we don't re-litigate)
+- **CloudKit:** lowest effort, free background push, private DB — but Apple-only, tied to iCloud, and not
+  "owned." Viable fallback; the self-hosted relay wins on ethos + platform-openness (Android/web/Linux
+  later). Its one real edge (free background push) is matchable with APNs (below).
+- **Pure P2P / BitTorrent:** BitTorrent is the wrong shape (immutable content fan-out, no mutable-state
+  merge). Real P2P (Syncthing, CRDT+libp2p) hits two hard walls: (1) **offline rendezvous** — two laptops
+  rarely awake together + a sleeping phone never form a live mesh without an always-on node (= a server
+  again); (2) **iOS kills background P2P** (no daemon/long-lived sockets — why there's no real Syncthing on
+  iOS). A relay you own is the fix for both. See the 2026-07-23 explore thread for the full comparison.
+
+### The two real wrinkles
+1. **iOS background sync → APNs.** Server sends a silent push when data changes; iOS wakes Muninn to sync.
+   APNs needs the $99 program — already required for iOS distribution anyway. Without it: foreground/launch
+   sync (fine for a companion).
+2. **NAS reachability (NAT).** Phone on cellular can't see a NAS behind home NAT. Fixes: **Tailscale**
+   (private mesh, no port-forward, iOS app exists — most on-brand), Cloudflare Tunnel, or just a **cloud
+   VPS** (always reachable; E2E means it's still zero-knowledge). Server URL becomes a setting → support
+   either.
+
+### The mobile app (minimal, not a port)
+iOS mandates WebKit for all browsers, so there's no engine problem. v1 scope: **browse (WKWebView) + your
+synced favourites/workspaces (a launcher) + reading-list / "send to phone" + Reminders (EventKit) +
+Pomodoro.** OUT: the Proton Pass shim, extensions, split view, mini player, desktop chrome. The sync
+payload it needs = the same durable "setup" core.
+
+### First actionable step (independent of the $99 / server decision)
+The durable investment isn't the transport — it's:
+1. **Restructure the syncable state to record-level** — stable ids + `updatedAt` per favourite/workspace/
+   folder/rule/setting (Muninn is half-way there; UUIDs already exist). De-risks sync, enables merge-on-load
+   even for a plain folder-sync, and is the prerequisite for *any* backend.
+2. **Extract `MuninnSync`** — a platform-agnostic Swift package (models + merge + a swappable transport
+   protocol) that both the AppKit Mac app and a future SwiftUI iOS app import. Teasing the data out of
+   `AppShell`'s AppKit is the un-sexy but pivotal refactor.
+Do these first; the server + iOS app follow, and the transport (own relay → CloudKit/P2P later) stays
+swappable.
+
+### The $99 thread (ties to [[self-update]])
+Mobile **mandates** the $99 Apple Developer Program (iOS distribution; free provisioning expires apps in
+7 days). Paying it once unlocks a cluster: iOS distribution **+** APNs for background sync **+** Developer
+ID for the self-update backlog item **+** App Store. Three separate explorations (self-update, mobile,
+sync) all terminate at this one gate — worth a deliberate decision when the time comes.
