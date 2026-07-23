@@ -22,6 +22,10 @@ final class StatusBarView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    // Display-only: never intercept mouse events, so it can't block controls beneath it (e.g. the
+    // Tools-pane toggle when the pane peeks in) or window dragging in the title-bar strip.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     func setLoading() { rebuild([("ellipsis", "…", .secondaryLabelColor)]) }
 
     func update(_ s: WeatherSnapshot?, fahrenheit: Bool) {
