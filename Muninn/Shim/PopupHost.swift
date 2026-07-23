@@ -121,8 +121,11 @@ private final class PopupBridge: NSObject, WKScriptMessageHandlerWithReply {
             return (NSNull(), nil)
         }
         // Popup → background internal messaging (extension context → onMessage).
+        // Chrome allows `sendMessage(extensionId, message)`; when the id is our own, it routes to the
+        // extension's OWN onMessage and the real message is args[1] (Proton's popup uses this form).
         if ns == "runtime", (env["method"] as? String) == "sendMessage" {
-            let result = await host.broker.routeSendMessageToHost(args.first, senderURL: host.webView?.url?.absoluteString)
+            let msg: Any? = (args.count >= 2 && (args.first as? String) == PassBundle.canonicalID) ? args[1] : args.first
+            let result = await host.broker.routeSendMessageToHost(msg, senderURL: host.webView?.url?.absoluteString)
             return (result, nil)
         }
         // Cross-context ports (popup ⇄ background) — the popup drives its UI over these.

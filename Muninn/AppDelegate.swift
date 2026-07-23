@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if PopupBootDiagnostic.isEnabled {
+            PopupBootDiagnostic.run() // headless: capture what the popup awaits from background
+            return
+        }
+
         NSApp.setActivationPolicy(.regular)
         buildMenu()
 

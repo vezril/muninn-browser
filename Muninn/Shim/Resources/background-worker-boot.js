@@ -21,8 +21,13 @@
         var parts = [];
         for (var i = 0; i < arguments.length; i++) {
           var a = arguments[i];
-          try { parts.push(typeof a === "string" ? a : JSON.stringify(a)); }
-          catch (_) { parts.push(String(a)); }
+          // Error objects JSON.stringify to "{}" (their name/message are non-enumerable),
+          // which hid the auth failure's error name. Serialize name+message explicitly —
+          // both are error-category strings, never values/credentials.
+          try {
+            parts.push(typeof a === "string" ? a
+              : (a instanceof Error ? (a.name + ": " + a.message) : JSON.stringify(a)));
+          } catch (_) { parts.push(String(a)); }
         }
         forward("console", { level: level, text: parts.join(" ") });
       } else {
