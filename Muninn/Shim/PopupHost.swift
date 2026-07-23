@@ -48,7 +48,10 @@ final class PopupHost: NSObject {
         ucc.addScriptMessageHandler(bridge, contentWorld: .page, name: "brokerIsolated")
         self.bridge = bridge
 
-        self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 360, height: 600), configuration: config)
+        // Proton's popup.html declares `--popup-width: 600px; --popup-height: 430px` with
+        // `width/height: var(...) !important` — size the web view to match, or the vault UI
+        // (a two-pane layout at 600px) overflows and clips on the right.
+        self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: Self.popupSize.width, height: Self.popupSize.height), configuration: config)
         self.webView.navigationDelegate = self
         if ProcessInfo.processInfo.environment["MUNINN_E6_GATE"] != nil, #available(macOS 13.3, *) {
             self.webView.isInspectable = true
@@ -62,12 +65,29 @@ final class PopupHost: NSObject {
         webView.load(URLRequest(url: URL(string: "\(PassBundle.scheme)://\(PassBundle.canonicalID)/popup.html")!))
     }
 
+    /// Proton's popup intrinsic size (`--popup-width` / `--popup-height` in popup.html).
+    static let popupSize = NSSize(width: 600, height: 430)
+
     /// Show the popup in a small panel (gate/daily use). Warn Calvin before calling in a
     /// GUI session (ground rule 2).
     func present() {
-        let w = NSWindow(contentRect: webView.frame, styleMask: [.titled, .closable],
+        if let w = window {           // reuse — closing only orders it out (see below)
+            w.makeKeyAndOrderFront(nil)
+            return
+        }
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: Self.popupSize),
+                         styleMask: [.titled, .closable, .fullSizeContentView],
                          backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false   // we retain it; reopen brings it back
         w.title = "Proton Pass"
+        // Full-bleed web content with a transparent, text-free title bar (Muninn's window
+        // aesthetic) — the traffic lights float over the popup's own header.
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.backgroundColor = NSColor(red: 0.09, green: 0.09, blue: 0.12, alpha: 1) // matches Proton's dark popup
+        webView.frame = NSRect(origin: .zero, size: Self.popupSize)
+        webView.autoresizingMask = [.width, .height]
         w.contentView = webView
         w.center()
         w.makeKeyAndOrderFront(nil)
