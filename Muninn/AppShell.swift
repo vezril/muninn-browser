@@ -1451,7 +1451,12 @@ final class AppShell: NSObject {
             showActiveWebView(); loadLanding(t); rebuildTabBar(); persist(); return
         }
         if closingActive {
-            activeIndex = tabs.firstIndex { $0.workspaceId == activeWorkspaceId } ?? 0
+            // Return to the most-recently-used remaining tab in this workspace (not the top of the list).
+            activeIndex = tabs.enumerated()
+                .filter { $0.element.workspaceId == activeWorkspaceId }
+                .max { $0.element.lastActiveAt < $1.element.lastActiveAt }?.offset
+                ?? (tabs.firstIndex { $0.workspaceId == activeWorkspaceId } ?? 0)
+            tabs[activeIndex].lastActiveAt = Date()   // it's active now — keeps the MRU chain correct
         } else if let ai = tabs.firstIndex(where: { $0 === active }) {
             activeIndex = ai
         } else {
