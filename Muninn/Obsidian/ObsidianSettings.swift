@@ -22,6 +22,24 @@ enum ObsidianSettings {
         let base = notesPath.isEmpty ? vaultPath : notesPath
         return URL(fileURLWithPath: base)
     }
+
+    // MARK: New-tab quotes
+
+    /// Show a random vault quote on the New Tab page instead of the tagline.
+    static var quotesEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "muninn.obsidian.quotesEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "muninn.obsidian.quotesEnabled") }
+    }
+    /// Folder scanned (recursively) for `source/quotes` notes. Empty → the vault root.
+    static var quotesPath: String {
+        get { UserDefaults.standard.string(forKey: "muninn.obsidian.quotesPath") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "muninn.obsidian.quotesPath") }
+    }
+    static var quotesFolder: URL? {
+        let base = quotesPath.isEmpty ? vaultPath : quotesPath
+        guard !base.isEmpty, FileManager.default.fileExists(atPath: base) else { return nil }
+        return URL(fileURLWithPath: base)
+    }
 }
 
 /// Creates Obsidian notes (Markdown files with YAML frontmatter).

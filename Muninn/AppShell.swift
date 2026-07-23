@@ -560,7 +560,26 @@ final class AppShell: NSObject {
             .replacingOccurrences(of: "__MUNINN_HOSTS__", with: json)
             .replacingOccurrences(of: "__MUNINN_SEARCH__", with: engine.searchBase)
             .replacingOccurrences(of: "__RAVEN_MASK_DATAURI__", with: Self.ravenMaskDataURI)
+            .replacingOccurrences(of: "__MUNINN_TAGLINE__", with: Self.landingTagline())
         tab.webView.loadHTMLString(html, baseURL: URL(string: engine.searchBase))
+    }
+
+    /// The New-Tab subtitle: a random vault quote (when enabled + available), else the default tagline.
+    private static func landingTagline() -> String {
+        if ObsidianSettings.quotesEnabled, let q = QuoteVault.shared.randomQuote() {
+            var html = "<div class=\"quote\">\(htmlEscape(q.text))</div>"
+            let parts = [q.author, q.from].compactMap { $0 }.filter { !$0.isEmpty }.map { htmlEscape($0) }
+            if !parts.isEmpty { html += "<div class=\"author\">— \(parts.joined(separator: ", "))</div>" }
+            return html
+        }
+        return "<div class=\"sub\">Private. Native. Yours.</div>"
+    }
+
+    private static func htmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     /// The icon's raven, extracted as a silhouette (white-on-transparent PNG), used as a faint
@@ -576,6 +595,9 @@ final class AppShell: NSObject {
         font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f6f6fb;color:#1a1a2e}
       h1{font-size:46px;font-weight:650;letter-spacing:-1.5px;margin:0}
       .sub{color:#6a6a88;margin:6px 0 30px;font-size:14px}
+      .quote{max-width:min(620px,84vw);text-align:center;font-size:19px;line-height:1.5;
+        font-style:italic;color:#2a2a45;margin:12px 0 4px}
+      .author{color:#6a6a88;font-size:13px;margin:0 0 28px}
       form{width:min(600px,82vw)}
       input{width:100%;box-sizing:border-box;padding:15px 20px;font-size:16px;border-radius:14px;
         border:1px solid #dcdce8;background:#fff;color:#111;outline:none;
@@ -587,13 +609,14 @@ final class AppShell: NSObject {
         mask:url(__RAVEN_MASK_DATAURI__) center/contain no-repeat}
       @media (prefers-color-scheme: dark){
         body{background:#16161f;color:#e8e8f2}.sub{color:#8a8aa8}
+        .quote{color:#dcdcec}.author{color:#8a8aa8}
         input{background:#22222e;border-color:#33334d;color:#fff;box-shadow:none}
         input:focus{border-color:#7777f8}
         .raven-bg{background:#e8e8f2;opacity:.07}
       }
     </style></head><body>
       <div class="raven-bg" aria-hidden="true"></div>
-      <h1>Muninn</h1><div class="sub">Private. Native. Yours.</div>
+      <h1>Muninn</h1>__MUNINN_TAGLINE__
       <form action="__MUNINN_SEARCH__" method="get" autocomplete="off">
         <input name="q" placeholder="Search or enter a URL" autofocus>
       </form>

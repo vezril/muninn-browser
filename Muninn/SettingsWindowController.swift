@@ -22,6 +22,7 @@ final class SettingsWindowController: NSWindowController {
                              "Português", "Nederlands", "日本語", "中文", "System default"]
     private let vaultPathLabel = NSTextField(labelWithString: "")
     private let notesPathLabel = NSTextField(labelWithString: "")
+    private let quotesPathLabel = NSTextField(labelWithString: "")
     private let routingList = NSStackView()
     private let calendarList = NSStackView()
     private let baseURLField = NSTextField()
@@ -997,9 +998,12 @@ final class SettingsWindowController: NSWindowController {
 
         vaultPathLabel.stringValue = ObsidianSettings.vaultPath.isEmpty ? "Not set" : ObsidianSettings.vaultPath
         notesPathLabel.stringValue = ObsidianSettings.notesPath.isEmpty ? "Vault root" : ObsidianSettings.notesPath
+        quotesPathLabel.stringValue = ObsidianSettings.quotesPath.isEmpty ? "Vault root" : ObsidianSettings.quotesPath
         let stack = formStack([
             row("Vault location", pathControl(vaultPathLabel, #selector(chooseVault))),
             row("New notes location", pathControl(notesPathLabel, #selector(chooseNotesFolder))),
+            row("Random quote on New Tab", makeSwitch(ObsidianSettings.quotesEnabled, #selector(toggleQuotes(_:)))),
+            row("Quotes folder (source/quotes)", pathControl(quotesPathLabel, #selector(chooseQuotesFolder))),
         ])
         for s in [title, hint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
         v.addSubview(stack)
@@ -1047,6 +1051,13 @@ final class SettingsWindowController: NSWindowController {
         guard let url = chooseFolder() else { return }
         ObsidianSettings.vaultPath = url.path
         vaultPathLabel.stringValue = url.path
+    }
+    @objc private func toggleQuotes(_ s: NSSwitch) { ObsidianSettings.quotesEnabled = (s.state == .on) }
+    @objc private func chooseQuotesFolder() {
+        guard let url = chooseFolder() else { return }
+        ObsidianSettings.quotesPath = url.path
+        quotesPathLabel.stringValue = url.path
+        QuoteVault.shared.invalidate()
     }
     @objc private func chooseNotesFolder() {
         guard let url = chooseFolder() else { return }
