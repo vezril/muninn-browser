@@ -83,6 +83,7 @@ final class AppShell: NSObject {
     private let settingsButton = HoverIconButton()
     private let shieldButton = HoverIconButton()
     private let translateButton = HoverIconButton()
+    private let passButton = HoverIconButton()  // opens the Proton Pass popup
     private let videoButton = HoverIconButton()
     private var videoButtonWidth: NSLayoutConstraint!
     private let shareButton = HoverIconButton()
@@ -3168,11 +3169,18 @@ final class AppShell: NSObject {
     }
 
     func openPopup() {
+        // Reuse a single popup (a fresh one per click would leak broker "popup" registrations).
+        if let existing = popup {
+            existing.present()  // re-show / bring to front
+            return
+        }
         let p = PopupHost(broker: broker)
         self.popup = p
         p.load()
         p.present()
     }
+
+    @objc func openPassPopup() { openPopup() }
 
     // MARK: - UI
 
@@ -3207,6 +3215,9 @@ final class AppShell: NSObject {
         // Translate — on-device page translation (no text leaves the Mac).
         configureIconButton(translateButton, symbol: "translate",
                             action: #selector(translateButtonClicked), tip: "Translate Page")
+        // Proton Pass — opens the vault popup.
+        configureIconButton(passButton, symbol: "key.fill",
+                            action: #selector(openPassPopup), tip: "Proton Pass")
 
         // Browser-extension action buttons — on the address row (full width, no traffic-light
         // offset), so a variable number of extension icons never overflows the narrow top strip.
@@ -3221,12 +3232,12 @@ final class AppShell: NSObject {
 
         // Top bar: [toggle back forward reload | shield settings]
         let topBar = NSStackView(views: [toggleButton, backButton, forwardButton, reloadButton,
-                                         toolbarDivider, shieldButton, translateButton, settingsButton])
+                                         toolbarDivider, shieldButton, translateButton, passButton, settingsButton])
         topBar.orientation = .horizontal
-        topBar.spacing = 1
+        topBar.spacing = 3                                // roomier than the old 1pt (less cramped)
         topBar.alignment = .centerY
-        topBar.setCustomSpacing(4, after: reloadButton)   // breathing room around the divider
-        topBar.setCustomSpacing(4, after: toolbarDivider)
+        topBar.setCustomSpacing(5, after: reloadButton)   // breathing room around the divider
+        topBar.setCustomSpacing(5, after: toolbarDivider)
         topBar.setHuggingPriority(.required, for: .horizontal) // size to content, never compress
         topBar.translatesAutoresizingMaskIntoConstraints = false
 
