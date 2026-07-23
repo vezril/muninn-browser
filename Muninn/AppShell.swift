@@ -110,6 +110,8 @@ final class AppShell: NSObject {
     private let toolsSidebar = ToolsSidebar()
     private let toolsButton = HoverIconButton()
     private var toolsOpen = false
+    private var toolsPeeking = false          // temporarily revealed by hovering the right edge
+    private var toolsTrailingConstraint: NSLayoutConstraint!
     private var webTrailingCollapsed: NSLayoutConstraint!
     private var webTrailingWithTools: NSLayoutConstraint!
     private static let defaultToolsWidth: CGFloat = 280
@@ -3328,20 +3330,27 @@ final class AppShell: NSObject {
         sidebar.layer?.shadowOffset = CGSize(width: 3, height: 0)
         sidebar.layer?.shadowOpacity = 0 // docked by default
 
-        // Right Tools sidebar — flush to the right edge, framing the web card (mirrors left).
+        // Right Tools sidebar — mirrors the left: slides off the right edge when collapsed, floats
+        // back as a rounded/shadowed overlay on hover-peek.
         toolsSidebar.translatesAutoresizingMaskIntoConstraints = false
-        toolsSidebar.isHidden = true
+        toolsSidebar.layer?.masksToBounds = false
+        toolsSidebar.shadow = NSShadow()
+        toolsSidebar.layer?.shadowColor = NSColor.black.cgColor
+        toolsSidebar.layer?.shadowRadius = 12
+        toolsSidebar.layer?.shadowOffset = CGSize(width: -3, height: 0)  // shadow to the left (mirror)
+        toolsSidebar.layer?.shadowOpacity = 0 // docked/collapsed by default
+        toolsSidebar.onExited = { [weak self] in self?.closeToolsPeek() }
 
-        // Tools toggle — top-right, in the transparent title-bar strip.
+        // Tools toggle — lives INSIDE the pane (top-right), like the left toggle lives in its sidebar.
         configureButton(toolsButton, symbol: "sidebar.right", action: #selector(toggleToolsSidebar))
         toolsButton.toolTip = "Tools"
+        toolsSidebar.addSubview(toolsButton)
 
         let content = NSView()
         content.wantsLayer = true // holds the workspace tint behind the floating card
         content.addSubview(webContainer)
         content.addSubview(toolsSidebar)   // right edge, behind the web card's shadow
         content.addSubview(sidebar)        // above the web card
-        content.addSubview(toolsButton)
         content.addSubview(sidebarSplitter) // draggable resize handles on the pane edges
         content.addSubview(toolsSplitter)
         // Video-download progress HUDs — stacked at the web card's bottom-right (clear of the
@@ -3361,6 +3370,8 @@ final class AppShell: NSObject {
         webTrailingWithTools = webContainer.trailingAnchor.constraint(equalTo: toolsSidebar.leadingAnchor, constant: -Self.webCardInset)
         sidebarWidthConstraint = sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth)
         toolsWidthConstraint = toolsSidebar.widthAnchor.constraint(equalToConstant: toolsWidth)
+        // Slides off the right edge (+toolsWidth) when collapsed; 0 when open/peeking. Starts collapsed.
+        toolsTrailingConstraint = toolsSidebar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: toolsWidth)
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
             sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -3369,13 +3380,13 @@ final class AppShell: NSObject {
             webContainer.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.webCardTopInset),
             webContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -Self.webCardInset),
             webLeadingDocked, // active while pinned open (the default)
-            webTrailingCollapsed, // tools hidden by default
+            webTrailingCollapsed, // tools collapsed by default
             toolsSidebar.topAnchor.constraint(equalTo: content.topAnchor),
             toolsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            toolsSidebar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            toolsTrailingConstraint,
             toolsWidthConstraint,
-            toolsButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 6),
-            toolsButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
+            toolsButton.topAnchor.constraint(equalTo: toolsSidebar.topAnchor, constant: 10),
+            toolsButton.trailingAnchor.constraint(equalTo: toolsSidebar.trailingAnchor, constant: -12),
             videoHUDStack.trailingAnchor.constraint(equalTo: webContainer.trailingAnchor, constant: -16),
             videoHUDStack.bottomAnchor.constraint(equalTo: webContainer.bottomAnchor, constant: -16),
         ])
@@ -3502,11 +3513,12 @@ final class AppShell: NSObject {
         }
     }
 
-    /// While collapsed, reveal the sidebar when the cursor reaches the left edge.
+    /// While collapsed, reveal a sidebar when the cursor reaches its edge (left → main, right → tools).
     private func handleMouseMoved(_ e: NSEvent) {
-        guard !sidebarOpen, !peeking, let content = window.contentView else { return }
+        guard let content = window.contentView else { return }
         let x = content.convert(e.locationInWindow, from: nil).x
-        if x <= 4 { openPeek() }
+        if !sidebarOpen, !peeking, x <= 4 { openPeek() }
+        if !toolsOpen, !toolsPeeking, x >= content.bounds.width - 4 { openToolsPeek() }
     }
 
     /// Mouse extra buttons: side buttons 3/4 → back/forward on the active tab; middle-click (2) on
@@ -3621,25 +3633,56 @@ final class AppShell: NSObject {
 
     @objc private func toggleToolsSidebar() { setToolsOpen(!toolsOpen, animated: true) }
 
+    private func setToolsFloating(_ floating: Bool) {
+        toolsSidebar.layer?.cornerRadius = floating ? 12 : 0
+        toolsSidebar.layer?.shadowOpacity = floating ? 0.22 : 0
+    }
+
     private func setToolsOpen(_ open: Bool, animated: Bool) {
         toolsOpen = open
-        toolsSidebar.isHidden = !open
+        toolsPeeking = false
         toolsSplitter.isHidden = !open
-        webTrailingCollapsed.isActive = !open
-        webTrailingWithTools.isActive = open
-        toolsButton.restingTint = open ? .controlAccentColor : .labelColor
-        toolsButton.contentTintColor = open ? .controlAccentColor : .labelColor
-        let apply = { self.window.contentView?.layoutSubtreeIfNeeded() }
+        setToolsFloating(false)                    // docked (or collapsed): flush, no shadow
+        webTrailingCollapsed.isActive = !open      // collapsed: web fills to the edge
+        webTrailingWithTools.isActive = open       // docked: web sits beside the tools pane
+        let target: CGFloat = open ? 0 : toolsWidth
+        let apply = { self.toolsTrailingConstraint.constant = target; self.window.contentView?.layoutSubtreeIfNeeded() }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.2
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 ctx.allowsImplicitAnimation = true
-                apply()
+                self.toolsTrailingConstraint.animator().constant = target
+                self.window.contentView?.layoutSubtreeIfNeeded()
             }
         } else { apply() }
         if open { resolveCalendar() } // refresh the widget immediately on reveal
         persist()
+    }
+
+    /// Hover-peek: while collapsed, sliding the cursor to the right edge reveals the tools pane as a
+    /// floating overlay; moving off it slides it back (mirrors the left sidebar).
+    private func openToolsPeek() {
+        guard !toolsOpen, !toolsPeeking else { return }
+        toolsPeeking = true
+        toolsSplitter.isHidden = true           // don't resize a floating peek
+        setToolsFloating(true)                  // rounded + shadowed while revealed
+        slideTools(to: 0)
+        resolveCalendar()
+    }
+    private func closeToolsPeek() {
+        guard toolsPeeking else { return }
+        toolsPeeking = false
+        slideTools(to: toolsWidth)
+    }
+    private func slideTools(to constant: CGFloat, then: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            toolsTrailingConstraint.animator().constant = constant
+            window.contentView?.layoutSubtreeIfNeeded()
+        }, completionHandler: then)
     }
 
     private func configureButton(_ b: NSButton, symbol: String, action: Selector) {
