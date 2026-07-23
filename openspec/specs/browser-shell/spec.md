@@ -271,3 +271,11 @@ phases with a visible countdown, controls to start/pause/reset/skip, and phase-c
 - **WHEN** a phase completes while Muninn is in the background and notifications are permitted
 - **THEN** a system notification announces the transition
 
+### Requirement: Most-recently-used tab on close
+When the active tab is closed, Muninn SHALL activate the most-recently-used remaining tab in the
+workspace, rather than the first tab in the list.
+
+#### Scenario: close returns to the previous tab
+- **WHEN** the user closes the active tab
+- **THEN** the tab they were on just before it becomes active
+
