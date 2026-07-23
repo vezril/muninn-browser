@@ -10,6 +10,11 @@ final class ToolsSidebar: NSView {
     private var tools: [Tool] = []
     private var buttons: [String: NSButton] = [:]
 
+    /// Hover reporting for the shell's right-edge peek (mirrors `HoverView`).
+    var onEntered: (() -> Void)?
+    var onExited: (() -> Void)?
+    private var hoverArea: NSTrackingArea?
+
     private let switcher = NSStackView()
     private let container = NSView()
     private let emptyLabel = NSTextField(labelWithString: "No tools yet.")
@@ -102,4 +107,15 @@ final class ToolsSidebar: NSView {
     }
 
     func applyTint(_ color: NSColor) { layer?.backgroundColor = color.cgColor }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = hoverArea { removeTrackingArea(a); hoverArea = nil }
+        guard onExited != nil || onEntered != nil else { return }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a); hoverArea = a
+    }
+    override func mouseEntered(with e: NSEvent) { onEntered?() }
+    override func mouseExited(with e: NSEvent) { onExited?() }
 }
