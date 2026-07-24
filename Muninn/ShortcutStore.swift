@@ -24,6 +24,7 @@ struct Shortcut: Codable, Equatable {
 enum ShortcutAction: String, CaseIterable {
     case commandBar, newTab, quickLook, closeTab, reopenClosed, togglePin
     case focusAddress, reload, copyURL, copyMarkdown, clearUnpinned, settings, toolsSidebar
+    case pauseAllVideos, muteAllTabs
 
     var title: String {
         switch self {
@@ -40,6 +41,8 @@ enum ShortcutAction: String, CaseIterable {
         case .clearUnpinned:return "Clear Unpinned Tabs"
         case .settings:     return "Settings"
         case .toolsSidebar: return "Toggle Tools Sidebar"
+        case .pauseAllVideos: return "Pause All Videos"
+        case .muteAllTabs:  return "Mute / Unmute All Tabs"
         }
     }
 
@@ -59,6 +62,8 @@ enum ShortcutAction: String, CaseIterable {
         case .clearUnpinned:return s("k", [.command, .shift])
         case .settings:     return s(",", [.command])
         case .toolsSidebar: return s("t", [.command, .option])
+        case .pauseAllVideos: return s("p", [.command, .shift])
+        case .muteAllTabs:  return s("m", [.command, .shift])
         }
     }
 }

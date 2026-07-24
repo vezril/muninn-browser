@@ -234,8 +234,16 @@ final class BrowserTab {
     /// For pinned/favourite tabs: the site it's anchored to. Cross-site link clicks open a
     /// Peek preview instead of navigating the tab away from here.
     var homeURL: URL?
-    /// Whether this tab is currently playing media (drives the Mini Player).
+    /// Whether this tab is currently playing media (drives the Mini Player + the sidebar's audio
+    /// indicator).
     var isPlayingMedia = false
+    /// Per-tab mute — toggled by the sidebar speaker icon, and set en masse by "Mute All Tabs".
+    private(set) var isMuted = false
+    /// Mute/unmute just this tab (whole-page mute, so it survives the page starting new sound).
+    func setMuted(_ muted: Bool) {
+        isMuted = muted
+        webView.setPageMuted(muted)
+    }
     /// Last time this tab was the foreground tab — drives Auto-Archive.
     var lastActiveAt = Date()
     /// URL a restored favourite/pinned tab should load lazily on first activation.

@@ -120,3 +120,26 @@ final class MuninnWebView: WKWebView {
         }
     }
 }
+
+extension WKWebView {
+    /// Mute/unmute the whole page's audio (video, audio, and Web Audio), persisting across the
+    /// page's own play/pause and future navigations — drives "Mute All Tabs".
+    ///
+    /// Uses the private SPI `-[WKWebView _setPageMuted:]` (`_WKMediaMutedState`; the audio bit is
+    /// `1 << 0`). This is a whole-page mute WebKit exposes no public equivalent for. Fails soft:
+    /// if the symbol is absent, falls back to muting existing `<video>`/`<audio>` elements via JS
+    /// (won't catch Web Audio or later-added media, but never crashes). ⚠️ Private symbol — gate
+    /// out for any Mac App Store build.
+    func setPageMuted(_ muted: Bool) {
+        let sel = NSSelectorFromString("_setPageMuted:")
+        if responds(to: sel), let m = class_getInstanceMethod(type(of: self), sel) {
+            typealias Fn = @convention(c) (NSObject, Selector, UInt) -> Void
+            let fn = unsafeBitCast(method_getImplementation(m), to: Fn.self)
+            fn(self, sel, muted ? 1 : 0) // 1 = _WKMediaAudioMuted
+        } else {
+            evaluateJavaScript(
+                "(function(){Array.prototype.forEach.call(document.querySelectorAll('video,audio'),function(el){el.muted=\(muted);});})()",
+                completionHandler: nil)
+        }
+    }
+}
