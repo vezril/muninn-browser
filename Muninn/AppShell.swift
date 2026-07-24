@@ -280,6 +280,7 @@ final class AppShell: NSObject {
         let tab = BrowserTab(id: id, broker: broker, dataStore: dataStore(forWorkspace: wid))
         tab.workspaceId = wid
         configureTab(tab)
+        applyMuteIfNeeded(tab) // inherit the session "mute all tabs" state (persists across navigations)
         return tab
     }
 
@@ -304,8 +305,10 @@ final class AppShell: NSObject {
         // Mini Player: track media playback so switching away can pop it out.
         tab.injector.onMediaState = { [weak self, weak tab] playing in
             guard let self, let tab else { return }
+            let changed = tab.isPlayingMedia != playing
             tab.isPlayingMedia = playing
             if tab.id == self.miniTabId { self.miniPlayer?.setPlaying(playing) }
+            if changed { self.rebuildTabBar() } // show/hide the sidebar audio indicator
         }
         // Downloads land in the tab's profile download folder.
         tab.injector.downloadFolder = { [weak self, weak tab] in
@@ -456,6 +459,61 @@ final class AppShell: NSObject {
 
     private static let mediaToggleJS = "(function(){var m=Array.prototype.find.call(document.querySelectorAll('video,audio'),function(x){return !x.ended;});if(!m)return;if(m.paused)m.play();else m.pause();})()"
     private static let mediaPauseJS = "(function(){Array.prototype.forEach.call(document.querySelectorAll('video,audio'),function(m){if(!m.paused)m.pause();});})()"
+    /// Pauses every `<video>`/`<audio>` in the page AND every same-origin subframe, returning how
+    /// many it actually paused (the count drives the toast, and tells us it reached the media).
+    private static let pauseAllVideosJS = """
+    (function(){
+      var n=0;
+      function sweep(doc){
+        try {
+          Array.prototype.forEach.call(doc.querySelectorAll('video,audio'), function(m){
+            try { if (!m.paused) { m.pause(); n++; } } catch(e){}
+          });
+          Array.prototype.forEach.call(doc.querySelectorAll('iframe'), function(f){
+            try { if (f.contentDocument) sweep(f.contentDocument); } catch(e){} // same-origin only
+          });
+        } catch(e){}
+      }
+      sweep(document);
+      return n;
+    })()
+    """
+
+    /// Session-wide "mute all tabs" state — applied to every tab + any new/lazily-loaded tab.
+    private var allTabsMuted = false
+
+    /// ⌘⇧P — pause every playing `<video>`/`<audio>` across all tabs (all workspaces). One-shot.
+    /// (A video inside a CROSS-origin iframe isn't script-controllable by anyone.)
+    func pauseAllVideos() {
+        let group = DispatchGroup()
+        let counter = Counter()
+        for tab in tabs {                       // no isLoaded filter — match the Mini Player's sweep
+            group.enter()
+            tab.webView.evaluateJavaScript(Self.pauseAllVideosJS) { result, _ in
+                counter.add((result as? Int) ?? ((result as? NSNumber)?.intValue ?? 0))
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            let n = counter.value
+            self?.showToast(n > 0 ? "Paused \(n) video\(n == 1 ? "" : "s")" : "Nothing was playing", record: false)
+        }
+    }
+
+    /// ⌘⇧M — mute/unmute audio on every tab (all workspaces); persists for the session so newly
+    /// loaded tabs inherit it (`applyMuteIfNeeded`).
+    func toggleMuteAllTabs() {
+        allTabsMuted.toggle()
+        var n = 0
+        for tab in tabs { tab.setMuted(allTabsMuted); n += 1 } // per-tab state stays in sync
+        rebuildTabBar()                                        // refresh the speaker icons
+        showToast((allTabsMuted ? "Muted " : "Unmuted ") + "\(n) tab\(n == 1 ? "" : "s")", record: false)
+    }
+
+    /// Apply the session mute state to a tab (called when a tab loads / is created).
+    func applyMuteIfNeeded(_ tab: BrowserTab) {
+        if allTabsMuted { tab.setMuted(true) }
+    }
     /// Float the playing <video> fullscreen over a black overlay (reversible) so the Mini Player
     /// shows only the video, not the whole page.
     // Reparent the playing <video> into a fixed fullscreen wrapper at the document root (this
@@ -1991,6 +2049,9 @@ final class AppShell: NSObject {
             .init(id: "toolsSidebar", title: "Toggle Tools Sidebar", symbol: "sidebar.right", shortcut: sc(.toolsSidebar)),
             .init(id: "openLast", title: "Open Last Tab", symbol: "arrow.uturn.left", shortcut: sc(.reopenClosed)),
             .init(id: "reload", title: "Reload", symbol: "arrow.clockwise", shortcut: sc(.reload)),
+            .init(id: "pauseVideos", title: "Pause All Videos", symbol: "pause.rectangle", shortcut: sc(.pauseAllVideos)),
+            .init(id: "muteTabs", title: allTabsMuted ? "Unmute All Tabs" : "Mute All Tabs",
+                  symbol: allTabsMuted ? "speaker.wave.2" : "speaker.slash", shortcut: sc(.muteAllTabs)),
             .init(id: "copyURL", title: "Copy URL", symbol: "link", shortcut: sc(.copyURL)),
             .init(id: "settings", title: "Open Settings", symbol: "gearshape", shortcut: sc(.settings)),
             .init(id: "taskManager", title: "Task Manager", symbol: "gauge.with.dots.needle.bottom.50percent", shortcut: nil),
@@ -2098,6 +2159,8 @@ final class AppShell: NSObject {
         case "toolsSidebar":  toggleToolsSidebar()
         case "openLast":      reopenLastClosed()
         case "reload":        reload()
+        case "pauseVideos":   pauseAllVideos()
+        case "muteTabs":      toggleMuteAllTabs()
         case "copyURL":       copyActiveURL()
         case "settings":      openSettings()
         case "taskManager":   openTaskManager()
@@ -3125,22 +3188,59 @@ final class AppShell: NSObject {
         close.widthAnchor.constraint(equalToConstant: 16).isActive = true
         close.heightAnchor.constraint(equalToConstant: 16).isActive = true
 
+        // Audio indicator — shown ONLY while this tab is actually playing media (Chrome/Safari
+        // behaviour). Slashed when muted. Click toggles mute for just this tab.
+        var speaker: HoverIconButton?
+        if tab.isPlayingMedia {
+            let b = HoverIconButton()
+            let symbol = tab.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
+            b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tab.isMuted ? "Unmute tab" : "Mute tab")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .regular))
+            b.isBordered = false
+            b.restingTint = tab.isMuted ? .tertiaryLabelColor : .secondaryLabelColor
+            b.contentTintColor = b.restingTint
+            b.toolTip = tab.isMuted ? "Unmute this tab" : "Mute this tab"
+            b.target = self; b.action = #selector(tabChipMuteToggled(_:)); b.tag = index
+            b.translatesAutoresizingMaskIntoConstraints = false
+            chip.addSubview(b)
+            speaker = b
+        }
+
         chip.addSubview(fav); chip.addSubview(title); chip.addSubview(close)
-        NSLayoutConstraint.activate([
+        var layout: [NSLayoutConstraint] = [
             fav.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 9),
             fav.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
             fav.widthAnchor.constraint(equalToConstant: 16),
             fav.heightAnchor.constraint(equalToConstant: 16),
-            title.leadingAnchor.constraint(equalTo: fav.trailingAnchor, constant: 7),
             title.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
             close.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -6),
             close.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
             title.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -6),
-        ])
+        ]
+        if let sp = speaker {   // favicon → speaker → title
+            layout += [
+                sp.leadingAnchor.constraint(equalTo: fav.trailingAnchor, constant: 5),
+                sp.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+                sp.widthAnchor.constraint(equalToConstant: 14),
+                sp.heightAnchor.constraint(equalToConstant: 14),
+                title.leadingAnchor.constraint(equalTo: sp.trailingAnchor, constant: 4),
+            ]
+        } else {
+            layout.append(title.leadingAnchor.constraint(equalTo: fav.trailingAnchor, constant: 7))
+        }
+        NSLayoutConstraint.activate(layout)
         return chip
     }
 
     @objc private func tabChipClosed(_ sender: NSButton) { closeTab(sender.tag) }
+
+    /// Sidebar speaker icon → mute/unmute just that tab.
+    @objc private func tabChipMuteToggled(_ sender: NSButton) {
+        let i = sender.tag
+        guard tabs.indices.contains(i) else { return }
+        tabs[i].setMuted(!tabs[i].isMuted)
+        rebuildTabBar()
+    }
 
     // MARK: - auth-fork (parked; runs on the active tab)
 
@@ -3809,6 +3909,8 @@ final class AppShell: NSObject {
         case .clearUnpinned: clearUnpinnedTabs()
         case .settings:      openSettings()
         case .toolsSidebar:  toggleToolsSidebar()
+        case .pauseAllVideos: pauseAllVideos()
+        case .muteAllTabs:   toggleMuteAllTabs()
         }
     }
 
@@ -3981,4 +4083,12 @@ extension AppShell: ExtensionHost {
         }
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
+}
+
+/// Tiny mutable box so the escaping `evaluateJavaScript` completion handlers can accumulate a
+/// count across tabs (they fire on the main thread, hence `@MainActor`).
+@MainActor
+final class Counter {
+    private(set) var value = 0
+    func add(_ n: Int) { value += n }
 }

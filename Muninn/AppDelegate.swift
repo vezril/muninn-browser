@@ -78,6 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func findPrevMenu() { shell?.findPrev() }
     @objc private func openTaskManager() { shell?.openTaskManager() }
     @objc private func translatePage() { shell?.translateButtonClicked() }
+    @objc private func pauseAllVideosMenu() { shell?.pauseAllVideos() }
+    @objc private func muteAllTabsMenu() { shell?.toggleMuteAllTabs() }
     @objc private func showReminders() { shell?.revealRemindersTool() }
     @objc private func newReminder() { shell?.performCommand("newReminder") }
     @objc private func reminderFromPage() { shell?.performCommand("reminderFromPage") }
@@ -133,6 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Translate Page", action: #selector(translatePage), keyEquivalent: "").target = self
+        fileMenu.addItem(.separator())
+        // Media controls across all tabs (remappable shortcuts handled by AppShell's key monitor).
+        fileMenu.addItem(withTitle: "Pause All Videos", action: #selector(pauseAllVideosMenu), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Mute / Unmute All Tabs", action: #selector(muteAllTabsMenu), keyEquivalent: "").target = self
         fileMenu.addItem(.separator())
         // Reminders submenu.
         let remindersItem = NSMenuItem(title: "Reminders", action: nil, keyEquivalent: "")
