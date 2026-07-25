@@ -25,6 +25,9 @@ final class AppShell: NSObject {
     private var findBar: FindBarView?
     private var findQuery = ""
     private let askChat = AskChatView()
+    /// Chat panel backed by the LOCAL Hermes Agent (own sessions file, so it doesn't mix with Ask).
+    private let hermesChat = AskChatView(storeFilename: "hermes-chat.json")
+    private var hermesTask: Task<Void, Never>?
     private var askTask: Task<Void, Never>?
     private let notificationStore = NotificationStore()
     private let notificationsView = NotificationsView()
@@ -54,6 +57,16 @@ final class AppShell: NSObject {
     /// Workspaces (each owns its favourites / pins / folders / regular tabs).
     private var workspaces: [Workspace] = []
     private var activeWorkspaceId = UUID()
+    /// Private mode: an ephemeral, session-only "space" (a reserved workspace id that never lands in
+    /// `workspaces` and is never persisted). Its tabs use an in-memory `nonPersistent()` data store,
+    /// record no history, write no download entries, and are torn down — store and all — on exit.
+    private let privateWorkspaceId = UUID()
+    private var privateStore: WKWebsiteDataStore?
+    /// The workspace to return to when leaving private mode.
+    private var privateReturnWorkspace: UUID?
+    private var isPrivate: Bool { activeWorkspaceId == privateWorkspaceId }
+    private let privateButton = HoverIconButton()
+    private let privateBadge = NSTextField(labelWithString: "Private")
     /// Profiles (separate cookie/login jars). The default profile uses the shared store.
     private var profiles: [Profile] = []
     private var defaultProfileId = UUID()
@@ -293,7 +306,10 @@ final class AppShell: NSObject {
                 self.updateChrome()
                 if let url = tab.webView.url {
                     self.storeForkStateIfPresent(url)
-                    self.currentHistory.record(url: url, title: tab.title)
+                    // Private tabs leave no trace: never record history.
+                    if tab.workspaceId != self.privateWorkspaceId {
+                        self.currentHistory.record(url: url, title: tab.title)
+                    }
                 }
             }
         }
@@ -327,9 +343,12 @@ final class AppShell: NSObject {
         tab.injector.onDecideJavaScript = { url in ShieldsManager.shared.javaScriptAllowed(for: url) }
         applyShields(to: tab)
         // Record finished downloads for the Library + play the "drop into Library" animation.
-        tab.injector.onDownloadFinished = { [weak self] dest, source in
-            self?.downloadStore.add(path: dest, source: source)
-            self?.flyToLibrary(icon: NSWorkspace.shared.icon(forFile: dest.path))
+        tab.injector.onDownloadFinished = { [weak self, weak tab] dest, source in
+            guard let self else { return }
+            // Private downloads: the file still saves (the user asked for it), but leave no Library record.
+            if tab?.workspaceId == self.privateWorkspaceId { return }
+            self.downloadStore.add(path: dest, source: source)
+            self.flyToLibrary(icon: NSWorkspace.shared.icon(forFile: dest.path))
         }
         // target="_blank" / window.open: Peek from a pinned tab (cross-site), else a new tab.
         tab.injector.onCreateWebView = { [weak self, weak tab] action in
@@ -769,10 +788,13 @@ final class AppShell: NSObject {
         // Drop empty folders that no pinned tab references (keeps state tidy).
         let used = Set(tabs.filter { $0.kind == .pinned }.compactMap { $0.folderId })
         folders.removeAll { !used.contains($0.id) }
+        // Never persist the private sentinel as the active workspace — save the space we'll return to.
+        let persistedActive = isPrivate ? (privateReturnWorkspace ?? workspaces.first?.id ?? activeWorkspaceId)
+                                        : activeWorkspaceId
         store.save(SidebarState(tabs: tabs.filter { $0.kind != .regular }.compactMap { $0.saved() },
                                 folders: folders,
                                 workspaces: workspaces,
-                                activeWorkspace: activeWorkspaceId.uuidString,
+                                activeWorkspace: persistedActive.uuidString,
                                 profiles: profiles,
                                 routingRules: routingRules,
                                 toolsSidebarOpen: toolsOpen,
@@ -1123,7 +1145,15 @@ final class AppShell: NSObject {
         return s
     }
     private func dataStore(forWorkspace wid: UUID) -> WKWebsiteDataStore {
-        dataStore(forProfile: workspaces.first { $0.id == wid }?.profileId ?? defaultProfileId)
+        if wid == privateWorkspaceId {
+            // In-memory jar: cookies/cache/localStorage live only for the session and evaporate
+            // when the store is released on exit.
+            if let s = privateStore { return s }
+            let s = WKWebsiteDataStore.nonPersistent()
+            privateStore = s
+            return s
+        }
+        return dataStore(forProfile: workspaces.first { $0.id == wid }?.profileId ?? defaultProfileId)
     }
 
     /// The active workspace's profile.
@@ -1133,7 +1163,8 @@ final class AppShell: NSObject {
     private var currentProfile: Profile? { profiles.first { $0.id == currentProfileId } }
     private var currentSearchEngine: SearchEngine { currentProfile?.searchEngine ?? .duckduckgo }
     private var currentAutoArchive: AutoArchive { currentProfile?.autoArchive ?? .d1 }
-    private var suggestionsEnabled: Bool { currentProfile?.suggestionsEnabled ?? true }
+    // No history-backed suggestions in private mode — nothing from normal browsing should surface here.
+    private var suggestionsEnabled: Bool { isPrivate ? false : (currentProfile?.suggestionsEnabled ?? true) }
     /// Per-profile history store (the default profile keeps `history.json`).
     private func history(forProfile id: UUID) -> HistoryStore {
         if let h = historyStores[id] { return h }
@@ -1205,6 +1236,11 @@ final class AppShell: NSObject {
     /// The active workspace's background tint (blend of the base bg + workspace colour).
     private func currentTintColor() -> NSColor {
         let base = NSColor.underPageBackgroundColor
+        if isPrivate {
+            // A distinct dark-indigo cast so it's unmistakable you're browsing privately.
+            let indigo = NSColor(calibratedRed: 0.24, green: 0.16, blue: 0.42, alpha: 1)
+            return base.blended(withFraction: 0.34, of: indigo) ?? base
+        }
         guard let ws = workspaces.first(where: { $0.id == activeWorkspaceId }) else { return base }
         return base.blended(withFraction: 0.20, of: wsColor(ws)) ?? base
     }
@@ -1216,6 +1252,17 @@ final class AppShell: NSObject {
         sidebar.layer?.backgroundColor = tint.cgColor
         window.contentView?.layer?.backgroundColor = tint.cgColor
         toolsSidebar.applyTint(tint)
+        refreshPrivateChrome()
+    }
+
+    /// Reflect private mode in the bottom bar: the mask button lights up and the "Private" badge shows.
+    private func refreshPrivateChrome() {
+        let on = isPrivate
+        privateBadge.isHidden = !on
+        let tint: NSColor = on ? NSColor(calibratedRed: 0.62, green: 0.50, blue: 0.92, alpha: 1) : .secondaryLabelColor
+        privateButton.restingTint = tint
+        privateButton.contentTintColor = tint
+        privateButton.toolTip = on ? "Leave private mode" : "Private mode — nothing is saved"
     }
 
     /// A quick crossfade when switching workspaces (sidebar tint + web card swap).
@@ -1285,6 +1332,8 @@ final class AppShell: NSObject {
 
     private func switchWorkspace(to wid: UUID) {
         guard wid != activeWorkspaceId, workspaces.contains(where: { $0.id == wid }) else { return }
+        // Leaving private mode by picking a normal space: tear the private session down first.
+        if isPrivate { teardownPrivateSession(returningTo: wid); return }
         let outgoing = activeTab
         lastActiveTabId[activeWorkspaceId] = activeTab.id
         activeWorkspaceId = wid
@@ -1301,6 +1350,61 @@ final class AppShell: NSObject {
         activeTab.ensureLoaded()
         popOutIfPlaying(outgoing) // switching workspace away from a playing tab → Mini Player
         showActiveWebView(); rebuildTabBar(); persist()
+    }
+
+    // MARK: - Private mode
+
+    /// ⌘⇧N / the mask button / File → Private Mode: toggle the ephemeral private session.
+    @objc func togglePrivateMode() { isPrivate ? exitPrivateMode() : enterPrivateMode() }
+
+    private func enterPrivateMode() {
+        guard !isPrivate else { return }
+        privateReturnWorkspace = activeWorkspaceId
+        lastActiveTabId[activeWorkspaceId] = activeTab.id
+        let outgoing = activeTab
+        privateStore = WKWebsiteDataStore.nonPersistent() // fresh in-memory jar each session
+        activeWorkspaceId = privateWorkspaceId
+        animateWorkspaceSwitch()
+        let t = makeTab(); t.workspaceId = privateWorkspaceId; tabs.append(t)
+        activeIndex = tabs.count - 1
+        loadLanding(t)
+        activeTab.ensureLoaded()
+        popOutIfPlaying(outgoing)
+        showActiveWebView(); rebuildTabBar()
+        showToast("Private mode — nothing is saved", record: false)
+    }
+
+    private func exitPrivateMode() {
+        guard isPrivate else { return }
+        let target = privateReturnWorkspace.flatMap { id in workspaces.first { $0.id == id }?.id }
+            ?? workspaces.first?.id ?? defaultWorkspaceFallback()
+        teardownPrivateSession(returningTo: target)
+    }
+
+    /// Remove every private tab, drop the in-memory store (its data is gone), and land on `wid`.
+    private func teardownPrivateSession(returningTo wid: UUID) {
+        for t in tabs where t.workspaceId == privateWorkspaceId { t.stop() }
+        tabs.removeAll { $0.workspaceId == privateWorkspaceId }
+        privateStore = nil          // releasing a nonPersistent store discards its data
+        privateReturnWorkspace = nil
+        activeWorkspaceId = wid
+        animateWorkspaceSwitch()
+        if let remembered = lastActiveTabId[wid], let i = tabIndex(id: remembered), tabs[i].workspaceId == wid {
+            activeIndex = i
+        } else if let i = tabs.firstIndex(where: { $0.workspaceId == wid }) {
+            activeIndex = i
+        } else {
+            let t = makeTab(); t.workspaceId = wid; tabs.append(t)
+            activeIndex = tabs.count - 1
+            loadLanding(t)
+        }
+        activeTab.ensureLoaded()
+        showActiveWebView(); rebuildTabBar(); persist()
+    }
+
+    /// A safe workspace id to fall back to (the first real space; used if the return space vanished).
+    private func defaultWorkspaceFallback() -> UUID {
+        workspaces.first?.id ?? activeWorkspaceId
     }
 
     @objc private func addWorkspace() {
@@ -1809,6 +1913,12 @@ final class AppShell: NSObject {
     /// Returns true if it re-homed the URL to another space.
     @discardableResult
     private func openRouted(_ url: URL, newTab: Bool) -> Bool {
+        // In private mode, never let a routing rule yank the URL into a persistent space — it would
+        // silently leave the private session. Load it in place, privately.
+        if isPrivate {
+            if newTab { openInNewTab(url) } else { activeTab.load(url) }
+            return false
+        }
         if let rule = routingRules.first(where: { $0.matches(url) }),
            rule.workspaceId != activeWorkspaceId,
            workspaces.contains(where: { $0.id == rule.workspaceId }) {
@@ -2045,6 +2155,8 @@ final class AppShell: NSObject {
             .init(id: "favourite", title: "Favourite Current Tab", symbol: "star", shortcut: nil),
             .init(id: "unfavourite", title: "Unfavourite Current Tab", symbol: "star.slash", shortcut: nil),
             .init(id: "cleanUp", title: "Clean Up", symbol: "sparkles", shortcut: sc(.clearUnpinned)),
+            .init(id: "privateMode", title: isPrivate ? "Leave Private Mode" : "Private Mode",
+                  symbol: isPrivate ? "eyeglasses" : "eyeglasses", shortcut: sc(.privateMode)),
             .init(id: "toggleSidebar", title: "Toggle Sidebar", symbol: "sidebar.left", shortcut: nil),
             .init(id: "toolsSidebar", title: "Toggle Tools Sidebar", symbol: "sidebar.right", shortcut: sc(.toolsSidebar)),
             .init(id: "openLast", title: "Open Last Tab", symbol: "arrow.uturn.left", shortcut: sc(.reopenClosed)),
@@ -2063,6 +2175,13 @@ final class AppShell: NSObject {
             .init(id: "listFromPage", title: "Create Reminders List from Page", symbol: "list.bullet.rectangle", shortcut: nil),
             .init(id: "askModel", title: "Ask Local Model…", symbol: "sparkles", shortcut: nil),
         ]
+        if HermesSettings.isConfigured {
+            cmds += [
+                .init(id: "hermes", title: "Ask Hermes…", symbol: "wand.and.stars", shortcut: nil),
+                .init(id: "hermesPage", title: "Ask Hermes about this Page", symbol: "wand.and.stars", shortcut: nil),
+                .init(id: "hermesSummarize", title: "Summarize Page with Hermes", symbol: "text.append", shortcut: nil),
+            ]
+        }
         if ObsidianSettings.isConfigured {
             cmds.append(.init(id: "newNote", title: "New Note from Page (Obsidian)", symbol: "square.and.pencil", shortcut: nil))
             if !OllamaSettings.defaultModel.isEmpty {
@@ -2157,6 +2276,7 @@ final class AppShell: NSObject {
         case "cleanUp":       clearUnpinnedTabs()
         case "toggleSidebar": toggleSidebar()
         case "toolsSidebar":  toggleToolsSidebar()
+        case "privateMode":   togglePrivateMode()
         case "openLast":      reopenLastClosed()
         case "reload":        reload()
         case "pauseVideos":   pauseAllVideos()
@@ -2173,6 +2293,9 @@ final class AppShell: NSObject {
         case "inspect":       inspectActiveTab()
         case "viewSource":    viewSource(of: activeWebView)
         case "askModel":      openAskModel()
+        case "hermes":          revealHermesTool()
+        case "hermesPage":      askHermesAboutPage()
+        case "hermesSummarize": summarizePageWithHermes()
         case "newNote":       newNoteFromPage()
         case "summarizeNote": summarizePageToNote()
         default:              break
@@ -2255,6 +2378,49 @@ final class AppShell: NSObject {
                 onDone(error)
             }
         }
+    }
+
+    // MARK: - Hermes Agent (local)
+
+    /// One Hermes turn: flatten the conversation into a prompt and stream the agent's reply.
+    /// Each `-z` run is stateless (Hermes keeps its own long-term memory separately).
+    private func runHermesTurn(_ messages: [ChatMessage],
+                               onToken: @escaping (String) -> Void, onDone: @escaping (Error?) -> Void) {
+        let path = HermesSettings.binaryPath
+        guard HermesSettings.isConfigured else {
+            onDone(HermesClient.HermesError.notFound); return
+        }
+        let client = HermesClient(binaryPath: path)
+        let prompt = HermesClient.prompt(from: messages)
+        hermesTask?.cancel()
+        hermesTask = Task { @MainActor in
+            do {
+                for try await chunk in client.promptStream(prompt) { onToken(chunk) }
+                onDone(nil)
+            } catch is CancellationError {
+                onDone(nil)
+            } catch {
+                onDone(error)
+            }
+        }
+    }
+
+    /// Reveal the Hermes tool in the Tools sidebar.
+    func revealHermesTool() {
+        if !toolsOpen { setToolsOpen(true, animated: true) }
+        toolsSidebar.selectTool("hermes")
+    }
+
+    /// ⌘N / File → "Ask Hermes about this page": opens the Hermes tool with the page attached.
+    func askHermesAboutPage() {
+        revealHermesTool()
+        hermesChat.ask("What's on this page? Give me the gist, and anything notable.", includePageContext: true)
+    }
+
+    /// ⌘N / File → "Summarize Page with Hermes".
+    func summarizePageWithHermes() {
+        revealHermesTool()
+        hermesChat.ask("Summarize this page concisely — the key points, in bullets.", includePageContext: true)
     }
 
     /// Render whatever the active tab entails — its split group, or itself alone.
@@ -3392,6 +3558,29 @@ final class AppShell: NSObject {
         libraryButton.toolTip = "Library — downloads & media"
         libraryButton.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(libraryButton)
+        // Private-mode toggle — bottom-left, beside the Library button.
+        privateButton.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "Private mode")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular))
+        privateButton.isBordered = false
+        privateButton.restingTint = .secondaryLabelColor
+        privateButton.contentTintColor = .secondaryLabelColor
+        privateButton.target = self; privateButton.action = #selector(togglePrivateMode)
+        privateButton.toolTip = "Private mode — nothing is saved"
+        privateButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(privateButton)
+        // "Private" badge — a small indigo pill on the right of the bottom bar, shown only when private.
+        privateBadge.font = .systemFont(ofSize: 10, weight: .semibold)
+        privateBadge.textColor = .white
+        privateBadge.alignment = .center
+        privateBadge.wantsLayer = true
+        privateBadge.layer?.backgroundColor = NSColor(calibratedRed: 0.42, green: 0.30, blue: 0.72, alpha: 1).cgColor
+        privateBadge.layer?.cornerRadius = 7
+        privateBadge.drawsBackground = false
+        privateBadge.isBezeled = false
+        privateBadge.isEditable = false
+        privateBadge.isHidden = true
+        privateBadge.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(privateBadge)
         sidebar.addSubview(workspaceBar)
         sidebar.addSubview(workspaceHoverLabel)
         sidebar.addSubview(tabStack)
@@ -3416,7 +3605,15 @@ final class AppShell: NSObject {
             libraryButton.centerYAnchor.constraint(equalTo: workspaceBar.centerYAnchor),
             libraryButton.widthAnchor.constraint(equalToConstant: 28),
             libraryButton.heightAnchor.constraint(equalToConstant: 28),
-            workspaceBar.leadingAnchor.constraint(equalTo: libraryButton.trailingAnchor, constant: 8),
+            privateButton.leadingAnchor.constraint(equalTo: libraryButton.trailingAnchor, constant: 2),
+            privateButton.centerYAnchor.constraint(equalTo: workspaceBar.centerYAnchor),
+            privateButton.widthAnchor.constraint(equalToConstant: 28),
+            privateButton.heightAnchor.constraint(equalToConstant: 28),
+            privateBadge.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -10),
+            privateBadge.centerYAnchor.constraint(equalTo: workspaceBar.centerYAnchor),
+            privateBadge.heightAnchor.constraint(equalToConstant: 16),
+            privateBadge.widthAnchor.constraint(equalToConstant: 52),
+            workspaceBar.leadingAnchor.constraint(equalTo: privateButton.trailingAnchor, constant: 6),
             workspaceBar.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -10),
             workspaceBar.trailingAnchor.constraint(lessThanOrEqualTo: sidebar.trailingAnchor, constant: -12),
             workspaceHoverLabel.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 10),
@@ -3553,6 +3750,13 @@ final class AppShell: NSObject {
             guard let self else { completion(nil); return }
             self.currentPageText { title, url, text in completion(.init(title: title, url: url, text: text)) }
         }
+        hermesChat.runChat = { [weak self] messages, onToken, onDone in
+            self?.runHermesTurn(messages, onToken: onToken, onDone: onDone)
+        }
+        hermesChat.fetchPageContext = { [weak self] completion in
+            guard let self else { completion(nil); return }
+            self.currentPageText { title, url, text in completion(.init(title: title, url: url, text: text)) }
+        }
         notificationsView.onClear = { [weak self] in self?.notificationStore.clear() }
         notificationStore.onChange = { [weak self] in
             guard let self else { return }
@@ -3575,6 +3779,7 @@ final class AppShell: NSObject {
             .init(id: "reminders", title: "Reminders", symbol: "checklist", view: remindersTool),
             .init(id: "pomodoro", title: "Pomodoro", symbol: "timer", view: pomodoroTool),
             .init(id: "ask", title: "Ask", symbol: "sparkles", view: askChat),
+            .init(id: "hermes", title: "Hermes", symbol: "wand.and.stars", view: hermesChat),
             .init(id: "notifications", title: "Notifications", symbol: "bell", view: notificationsView),
         ])
         pomodoroTool.onPhaseComplete = { [weak self] ended, next in
@@ -3911,6 +4116,7 @@ final class AppShell: NSObject {
         case .toolsSidebar:  toggleToolsSidebar()
         case .pauseAllVideos: pauseAllVideos()
         case .muteAllTabs:   toggleMuteAllTabs()
+        case .privateMode:   togglePrivateMode()
         }
     }
 

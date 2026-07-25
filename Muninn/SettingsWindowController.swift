@@ -30,6 +30,8 @@ final class SettingsWindowController: NSWindowController {
     private let cityField = NSTextField()
     private let modelPopup = NSPopUpButton()
     private let modelStatus = NSTextField(labelWithString: "")
+    private let hermesPathField = NSTextField()
+    private let hermesStatus = NSTextField(labelWithString: "")
 
     // Profiles state
     private var selectedProfileId: UUID?
@@ -886,8 +888,35 @@ final class SettingsWindowController: NSWindowController {
         testRow.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = formStack([ row("Ollama URL", baseURLField), row("Default model", modelPopup) ])
-        for s in [title, hint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
-        v.addSubview(stack); v.addSubview(testRow)
+
+        // Hermes Agent — a local agent CLI, invoked one-shot. Separate from Ollama.
+        let hTitle = heading("Hermes Agent")
+        let hHint = NSTextField(labelWithString: "A local Hermes Agent (Nous Research) with tool access. Muninn runs it one-shot; Hermes' own approval gates stay in force. Use the Hermes tool in the sidebar, or ⌘N → “Ask Hermes”.")
+        hHint.font = .systemFont(ofSize: 12); hHint.textColor = .secondaryLabelColor
+        hHint.lineBreakMode = .byWordWrapping; hHint.maximumNumberOfLines = 3; hHint.preferredMaxLayoutWidth = 620
+
+        hermesPathField.stringValue = HermesSettings.binaryPath
+        hermesPathField.placeholderString = "~/.local/bin/hermes"
+        hermesPathField.font = .systemFont(ofSize: 13)
+        hermesPathField.target = self; hermesPathField.action = #selector(hermesPathChanged)
+        hermesPathField.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        hermesStatus.font = .systemFont(ofSize: 12); hermesStatus.textColor = .secondaryLabelColor
+        refreshHermesStatus()
+
+        let hStack = formStack([ row("Hermes CLI", hermesPathField), row("", hermesStatus) ])
+
+        for s in [title, hint, hTitle, hHint] { s.translatesAutoresizingMaskIntoConstraints = false; v.addSubview(s) }
+        v.addSubview(stack); v.addSubview(testRow); v.addSubview(hStack)
+        NSLayoutConstraint.activate([
+            hTitle.topAnchor.constraint(equalTo: testRow.bottomAnchor, constant: 28),
+            hTitle.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hHint.topAnchor.constraint(equalTo: hTitle.bottomAnchor, constant: 4),
+            hHint.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hHint.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+            hStack.topAnchor.constraint(equalTo: hHint.bottomAnchor, constant: 18),
+            hStack.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
+            hStack.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -24),
+        ])
         NSLayoutConstraint.activate([
             title.topAnchor.constraint(equalTo: v.topAnchor, constant: 24),
             title.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 24),
@@ -902,6 +931,22 @@ final class SettingsWindowController: NSWindowController {
         ])
         loadModels(reportStatus: false)
         return v
+    }
+
+    @objc private func hermesPathChanged() {
+        HermesSettings.binaryPath = hermesPathField.stringValue.trimmingCharacters(in: .whitespaces)
+        refreshHermesStatus()
+    }
+
+    private func refreshHermesStatus() {
+        let path = HermesSettings.binaryPath
+        if HermesSettings.isConfigured {
+            hermesStatus.stringValue = "✓ Found at \(path)"
+        } else if path.isEmpty {
+            hermesStatus.stringValue = "Not installed — install the Hermes CLI, or enter its path."
+        } else {
+            hermesStatus.stringValue = "✗ Not executable at that path."
+        }
     }
 
     @objc private func baseURLChanged() {

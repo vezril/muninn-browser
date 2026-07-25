@@ -24,7 +24,7 @@ struct Shortcut: Codable, Equatable {
 enum ShortcutAction: String, CaseIterable {
     case commandBar, newTab, quickLook, closeTab, reopenClosed, togglePin
     case focusAddress, reload, copyURL, copyMarkdown, clearUnpinned, settings, toolsSidebar
-    case pauseAllVideos, muteAllTabs
+    case pauseAllVideos, muteAllTabs, privateMode
 
     var title: String {
         switch self {
@@ -43,6 +43,7 @@ enum ShortcutAction: String, CaseIterable {
         case .toolsSidebar: return "Toggle Tools Sidebar"
         case .pauseAllVideos: return "Pause All Videos"
         case .muteAllTabs:  return "Mute / Unmute All Tabs"
+        case .privateMode:  return "Private Mode"
         }
     }
 
@@ -64,6 +65,7 @@ enum ShortcutAction: String, CaseIterable {
         case .toolsSidebar: return s("t", [.command, .option])
         case .pauseAllVideos: return s("p", [.command, .shift])
         case .muteAllTabs:  return s("m", [.command, .shift])
+        case .privateMode:  return s("n", [.command, .shift]) // platform-standard "new private window"
         }
     }
 }

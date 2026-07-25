@@ -11,7 +11,9 @@ final class AskChatView: NSView {
     var fetchPageContext: ((@escaping (PageContext?) -> Void) -> Void)?
     private var includePage = false
 
-    private let store = ChatStore()
+    /// Which persisted store this panel uses — set at construction so each chat tool (local model,
+    /// Hermes) keeps its own sessions.
+    private let store: ChatStore
     private var sessions: [ChatSession] = []
     private var current = 0
 
@@ -25,12 +27,30 @@ final class AskChatView: NSView {
     private var typingTimer: Timer?
     private var typingDots = 1
 
+    /// - Parameter storeFilename: the sessions file for this panel — each chat tool (local model,
+    ///   Hermes) keeps its own conversations.
+    init(storeFilename: String = "chat.json") {
+        store = ChatStore(filename: storeFilename)
+        super.init(frame: .zero)
+        build()
+        reload()
+    }
     override init(frame frameRect: NSRect) {
+        store = ChatStore()
         super.init(frame: frameRect)
         build()
         reload()
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Ask programmatically (the "Ask Hermes about this page" commands) — fills the input and sends,
+    /// optionally forcing page context on for this turn.
+    func ask(_ text: String, includePageContext: Bool = false) {
+        guard !isStreaming else { NSSound.beep(); return }
+        if includePageContext, !includePage { togglePage() } // keeps the toggle's visual state honest
+        input.stringValue = text
+        send()
+    }
 
     // MARK: layout
 
