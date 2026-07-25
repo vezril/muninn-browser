@@ -28,12 +28,14 @@ struct ChatSession: Codable, Identifiable {
 final class ChatStore {
     private let fileURL: URL
 
-    init() {
+    /// - Parameter filename: which store to use. Each chat tool gets its own file so the local-model
+    ///   and Hermes conversations don't collide (`chat.json`, `hermes-chat.json`).
+    init(filename: String = "chat.json") {
         let base = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                     ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("Muninn", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        fileURL = base.appendingPathComponent("chat.json")
+        fileURL = base.appendingPathComponent(filename)
     }
 
     func load() -> [ChatSession] {

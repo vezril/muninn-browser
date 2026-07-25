@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var shell: AppShell?
     private let aboutPanel = AboutPanelController()
     /// External links that arrived before the shell was ready.
@@ -80,6 +80,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func translatePage() { shell?.translateButtonClicked() }
     @objc private func pauseAllVideosMenu() { shell?.pauseAllVideos() }
     @objc private func muteAllTabsMenu() { shell?.toggleMuteAllTabs() }
+    @objc private func togglePrivateMode() { shell?.togglePrivateMode() }
+    @objc private func askHermes() { shell?.revealHermesTool() }
+    @objc private func askHermesPage() { shell?.askHermesAboutPage() }
+    @objc private func summarizeHermes() { shell?.summarizePageWithHermes() }
+
+    /// Grey out the Hermes items when the CLI isn't installed (or its path isn't set).
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(askHermes), #selector(askHermesPage), #selector(summarizeHermes):
+            return HermesSettings.isConfigured
+        default:
+            return true
+        }
+    }
     @objc private func showReminders() { shell?.revealRemindersTool() }
     @objc private func newReminder() { shell?.performCommand("newReminder") }
     @objc private func reminderFromPage() { shell?.performCommand("reminderFromPage") }
@@ -131,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenu = NSMenu(title: "File")
         // (no key equivalent — the remappable shortcut is handled by AppShell's key monitor)
         fileMenu.addItem(withTitle: "New Quick Look", action: #selector(newQuickLook), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Private Mode", action: #selector(togglePrivateMode), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Save Page As…", action: #selector(savePageAs), keyEquivalent: "s").target = self
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Task Manager", action: #selector(openTaskManager), keyEquivalent: "").target = self
@@ -139,6 +154,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Media controls across all tabs (remappable shortcuts handled by AppShell's key monitor).
         fileMenu.addItem(withTitle: "Pause All Videos", action: #selector(pauseAllVideosMenu), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Mute / Unmute All Tabs", action: #selector(muteAllTabsMenu), keyEquivalent: "").target = self
+        fileMenu.addItem(.separator())
+        // Hermes Agent (local). Hidden unless the CLI is installed — validated in validateMenuItem.
+        let hermesItem = NSMenuItem(title: "Hermes", action: nil, keyEquivalent: "")
+        let hermesMenu = NSMenu(title: "Hermes")
+        hermesMenu.addItem(withTitle: "Ask Hermes…", action: #selector(askHermes), keyEquivalent: "").target = self
+        hermesMenu.addItem(.separator())
+        hermesMenu.addItem(withTitle: "Ask Hermes about this Page", action: #selector(askHermesPage), keyEquivalent: "").target = self
+        hermesMenu.addItem(withTitle: "Summarize Page with Hermes", action: #selector(summarizeHermes), keyEquivalent: "").target = self
+        hermesItem.submenu = hermesMenu
+        fileMenu.addItem(hermesItem)
         fileMenu.addItem(.separator())
         // Reminders submenu.
         let remindersItem = NSMenuItem(title: "Reminders", action: nil, keyEquivalent: "")
