@@ -65,6 +65,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 
+    /// Flush the latest session to disk on a clean quit (debounced saves may be pending).
+    func applicationWillTerminate(_ notification: Notification) {
+        shell?.saveSessionNow()
+    }
+
     @objc private func openSettings() { shell?.openSettings() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
