@@ -121,10 +121,12 @@ struct SidebarState: Codable {
     /// User-resized pane widths (nil = use the default).
     var sidebarWidth: Double?
     var toolsWidth: Double?
+    /// Index (into `tabs`) of the tab that was active, so it's re-selected on relaunch.
+    var activeTabIndex: Int?
 }
 
-/// Persists the sidebar's favourites + pinned tabs (and their folders) to a JSON file in
-/// Application Support, so they survive relaunch. Regular tabs are session-only (for now).
+/// Persists the sidebar's favourites + pinned tabs (and their folders) — plus regular tabs, so the
+/// whole session reopens after relaunch (a crash included) — to a JSON file in Application Support.
 @MainActor
 final class SidebarStore {
     private let fileURL: URL

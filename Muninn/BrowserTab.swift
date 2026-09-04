@@ -250,6 +250,12 @@ final class BrowserTab {
     var pendingURL: URL?
     /// Whether this tab's webView has loaded anything yet (lazy restore).
     var isLoaded = false
+    /// True while this tab is only showing the new-tab landing page — so an empty new tab isn't
+    /// persisted (and restored) as if it were a real page. Cleared once a real page commits.
+    var isShowingLanding = false
+    /// The baseURL the landing HTML was loaded against (the search engine home). Used to tell the
+    /// landing page's own `url` apart from a real navigation away from it.
+    var landingBaseURL: URL?
 
     /// Display title (page title, falling back to host / "New Tab").
     private(set) var title: String = "New Tab"
@@ -276,7 +282,10 @@ final class BrowserTab {
             MainActor.assumeIsolated { self?.refreshTitle(wv); self?.onChange?() }
         }
         urlObs = webView.observe(\.url, options: [.new]) { [weak self] wv, _ in
-            MainActor.assumeIsolated { self?.refreshTitle(wv); self?.onChange?() }
+            MainActor.assumeIsolated {
+                self?.noteNavigatedAwayFromLanding(wv)
+                self?.refreshTitle(wv); self?.onChange?()
+            }
         }
         // Fetch the favicon only once a page has finished loading — its DOM (and
         // location.origin) is then the real page, not the outgoing one.
@@ -319,7 +328,14 @@ final class BrowserTab {
     /// Set a display title for a restored (not-yet-loaded) tab.
     func setInitialTitle(_ t: String) { if !t.isEmpty { title = t } }
 
-    func load(_ url: URL) { pendingURL = nil; isLoaded = true; injector.load(url) }
+    func load(_ url: URL) { pendingURL = nil; isLoaded = true; isShowingLanding = false; injector.load(url) }
+
+    /// When the webView commits a URL that isn't the landing page's own base, the tab has navigated
+    /// to a real page (e.g. searched from the new-tab page) — so it's a restorable tab now.
+    private func noteNavigatedAwayFromLanding(_ wv: WKWebView) {
+        guard isShowingLanding, let u = wv.url, u.scheme?.hasPrefix("http") == true else { return }
+        if u != landingBaseURL { isShowingLanding = false }
+    }
 
     /// Lazily load a restored favourite/pinned tab the first time it's shown.
     func ensureLoaded() {
@@ -355,6 +371,8 @@ final class BrowserTab {
     }
 
     func saved() -> SavedTab? {
+        // A tab only ever showing the new-tab landing page isn't a real page to restore.
+        if isShowingLanding { return nil }
         // Anchored (pinned/favourite) tabs persist their pin (`homeURL`) so they reopen at the
         // original link after a relaunch too, not wherever they were last navigated.
         let anchor = (kind != .regular) ? homeURL?.absoluteString : nil

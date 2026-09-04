@@ -21,6 +21,8 @@ final class AppShell: NSObject {
     private var historyStores: [UUID: HistoryStore] = [:]
     /// Recently closed regular tabs (for Cmd+Shift+T), most-recent last.
     private var closedTabs: [SavedTab] = []
+    /// Debounced full-session save (for frequent regular-tab navigations).
+    private var sessionSaveWork: DispatchWorkItem?
     private var palette: CommandPalette?
     private var findBar: FindBarView?
     private var findQuery = ""
@@ -204,21 +206,32 @@ final class AppShell: NSObject {
         // Drop dangling workspace profile refs.
         workspaces = workspaces.map { var w = $0; if let p = w.profileId, !profileIds.contains(p) { w.profileId = nil }; return w }
 
-        // First (session) regular tab in the active workspace, then restore saved tabs.
-        tabs.append(makeTab(workspaceId: activeWorkspaceId))
-        for s in saved.tabs {
+        // Restore the whole saved session (favourites/pinned + regular tabs), lazily — each tab
+        // loads its page only when first shown. The previously-active tab is re-selected below.
+        var activeRestored: BrowserTab?
+        for (idx, s) in saved.tabs.enumerated() {
             guard let url = URL(string: s.url) else { continue }
             let wid = s.workspaceId.flatMap(UUID.init).flatMap { wsIds.contains($0) ? $0 : nil } ?? defaultWs
             let tab = makeTab(workspaceId: wid)
             tab.kind = s.kind
             tab.pendingURL = url
-            tab.homeURL = url // anchored site for Peek (restored pinned/favourite)
+            if s.kind != .regular { tab.homeURL = url } // anchor site for Peek (pinned/favourite only)
             tab.setInitialTitle(s.title)
             tab.customTitle = s.customTitle
             tab.setInitialFavicon(base64: s.faviconBase64)
             if let fid = s.folderId.flatMap(UUID.init), folderIds.contains(fid) { tab.folderId = fid }
             tabs.append(tab)
+            if idx == saved.activeTabIndex { activeRestored = tab }
         }
+        // Always keep at least one tab in the active workspace (a fresh landing tab if it was empty).
+        if !tabs.contains(where: { $0.workspaceId == activeWorkspaceId }) {
+            let t = makeTab(workspaceId: activeWorkspaceId); tabs.append(t)
+            if activeRestored == nil { activeRestored = t }
+        }
+        // Re-select the previously-active tab (falling back to the first in the active workspace).
+        activeIndex = activeRestored.flatMap { rt in tabs.firstIndex { $0 === rt } }
+            ?? tabs.firstIndex { $0.workspaceId == activeWorkspaceId }
+            ?? 0
 
         // The auth-fork is background-driven: background.js opens the fork URL via
         // tabs.create/windows.create. Route those to the active tab, and — the fork-init
@@ -236,7 +249,7 @@ final class AppShell: NSObject {
         if saved.toolsSidebarOpen { setToolsOpen(true, animated: false) } // restore Tools sidebar
         showActiveWebView()
 
-        loadLanding(activeTab) // default new-tab page (auth-fork paths override in present())
+        loadActiveTabInitial() // restored tab loads its page; a fresh tab shows the landing page
         window.center()
     }
 
@@ -272,7 +285,7 @@ final class AppShell: NSObject {
         func proceed() {
             if env["MUNINN_FORKINIT"] != nil { doForkInit() }
             else if env["MUNINN_POPUP"] != nil { openPopup() }
-            else { loadLanding(activeTab) } // plain browser: the landing page
+            else { loadActiveTabInitial() } // plain browser: restored page, or the landing page
 
         }
         // MUNINN_FRESH: wipe Muninn's OWN default website data (its store — NOT the
@@ -311,6 +324,10 @@ final class AppShell: NSObject {
                         self.currentHistory.record(url: url, title: tab.title)
                     }
                 }
+            }
+            // Keep the restorable session fresh as regular tabs navigate (debounced).
+            if tab.workspaceId != self.privateWorkspaceId {
+                self.scheduleSessionSave()
             }
         }
         // Peek: intercept cross-site link clicks in an anchored (pinned/favourite) tab.
@@ -637,6 +654,14 @@ final class AppShell: NSObject {
 
     /// Muninn's new-tab landing page: a search box (DuckDuckGo, or a typed URL) — a
     /// placeholder we can grow into a real start page later.
+    /// Load the active tab for the first time at launch: a restored tab loads its saved page (lazily);
+    /// a fresh tab shows the landing page. Idempotent — a no-op once the tab has loaded.
+    private func loadActiveTabInitial() {
+        let t = activeTab
+        if t.isLoaded { return }
+        if t.pendingURL != nil { t.ensureLoaded() } else { loadLanding(t) }
+    }
+
     private func loadLanding(_ tab: BrowserTab) {
         let hosts = suggestionsEnabled ? Array(currentHistory.rankedHosts().prefix(60)) : []
         let json = (try? JSONSerialization.data(withJSONObject: hosts))
@@ -647,7 +672,10 @@ final class AppShell: NSObject {
             .replacingOccurrences(of: "__MUNINN_SEARCH__", with: engine.searchBase)
             .replacingOccurrences(of: "__RAVEN_MASK_DATAURI__", with: Self.ravenMaskDataURI)
             .replacingOccurrences(of: "__MUNINN_TAGLINE__", with: Self.landingTagline())
-        tab.webView.loadHTMLString(html, baseURL: URL(string: engine.searchBase))
+        let base = URL(string: engine.searchBase)
+        tab.landingBaseURL = base
+        tab.isShowingLanding = true   // an empty new tab isn't persisted/restored as a real page
+        tab.webView.loadHTMLString(html, baseURL: base)
     }
 
     /// The New-Tab subtitle: a random vault quote (when enabled + available), else the default tagline.
@@ -791,7 +819,16 @@ final class AppShell: NSObject {
         // Never persist the private sentinel as the active workspace — save the space we'll return to.
         let persistedActive = isPrivate ? (privateReturnWorkspace ?? workspaces.first?.id ?? activeWorkspaceId)
                                         : activeWorkspaceId
-        store.save(SidebarState(tabs: tabs.filter { $0.kind != .regular }.compactMap { $0.saved() },
+        // Persist the whole session (regular tabs included) so it reopens after a relaunch/crash —
+        // but NEVER private tabs (privacy) and never the ephemeral landing tabs (`saved()` returns nil).
+        var savedTabs: [SavedTab] = []
+        var activeTabIndex: Int?
+        for tab in tabs where tab.workspaceId != privateWorkspaceId {
+            guard let s = tab.saved() else { continue }
+            if tab === activeTab { activeTabIndex = savedTabs.count }
+            savedTabs.append(s)
+        }
+        store.save(SidebarState(tabs: savedTabs,
                                 folders: folders,
                                 workspaces: workspaces,
                                 activeWorkspace: persistedActive.uuidString,
@@ -800,7 +837,22 @@ final class AppShell: NSObject {
                                 toolsSidebarOpen: toolsOpen,
                                 liveCalendars: liveCalendars,
                                 sidebarWidth: Double(sidebarWidth),
-                                toolsWidth: Double(toolsWidth)))
+                                toolsWidth: Double(toolsWidth),
+                                activeTabIndex: activeTabIndex))
+    }
+
+    /// Coalesced session save — regular-tab navigations fire often, so debounce the write.
+    private func scheduleSessionSave() {
+        sessionSaveWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.persist() }
+        sessionSaveWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: w)
+    }
+
+    /// Flush any pending session save immediately (called on quit).
+    func saveSessionNow() {
+        sessionSaveWork?.cancel(); sessionSaveWork = nil
+        persist()
     }
 
     private func setKind(_ index: Int, _ kind: TabKind) {
